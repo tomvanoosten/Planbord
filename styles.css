@@ -61,4 +61,7 @@ fieldset{border:1px solid #e2dfe2;margin:18px 0;padding:14px}legend{font-size:12
 .toast strong,.toast small{display:block}.toast small{color:#746574;margin-top:5px}
 #storageWarning{background:#fff2cf;padding:10px 24px;margin:0}
 .sr-only{position:absolute;clip:rect(0,0,0,0);width:1px;height:1px;overflow:hidden}
+.team-switch{display:flex;align-items:center;gap:6px;margin:0 0 0 auto;font-weight:400}.team-switch select{width:140px!important;margin:0!important;padding:5px!important}
+.recipient-list{max-height:150px;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:6px}.recipient-list label{margin:0;font-size:12px}.team-edit{display:flex;align-items:center;gap:8px;margin-bottom:10px}.team-edit input{min-width:0;flex:1;padding:8px;border:1px solid #ccc}.team-edit small{color:#777}
+#myTeams{max-height:180px;overflow:auto}#connectionStatus{white-space:pre-line}
 @media(max-width:650px){.appbar-caption{display:none}.commandbar{padding:7px 10px;gap:2px}.commandbar button{padding:6px 8px}.board-heading{padding:14px 12px}.board-tools{gap:8px}.search input{width:140px}.board{padding-left:10px}.column{min-width:218px}.statusbar span:last-child{display:none}.form-row{grid-template-columns:1fr}.dialog-footer{flex-wrap:wrap}dialog{padding:18px}.column-actions{flex-direction:column}}

@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="styles.css">
   <script src="board-core.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="teams.js" defer></script>
+  <script src="shared.js" defer></script>
 </head>
 <body>
   <header class="appbar"><span class="appmark" aria-hidden="true">▦</span><strong>Planboard</strong><span class="appbar-caption">Projecten op een rij</span><button id="bell" title="Meldingen">Meldingen <span id="badge">0</span></button></header>
@@ -16,6 +18,9 @@
     <button id="settingsButton">⚙ Veldnamen</button>
     <button id="desktopNotifications">Meldingen inschakelen</button>
     <button id="testNotification">Testmelding</button>
+    <label class="team-switch">Team <select id="teamFilter"><option value="everyone">Iedereen</option></select></label>
+    <button id="teamsButton">Teams beheren</button>
+    <button id="profileButton">Gastprofiel / verbinden</button>
   </nav>
   <section class="board-heading"><div class="board-icon" aria-hidden="true">▤</div><div><small>Mijn lijsten</small><h1>Projectstatus</h1></div><div class="board-tools"><label class="search"><span class="sr-only">Zoek projecten</span><input id="search" type="search" placeholder="Zoek projecten…"></label><span class="view-name">▦ Bord</span></div></section>
   <p id="storageWarning" role="alert" hidden></p>
@@ -27,9 +32,12 @@
       <div class="dialog-heading"><div><small>PROJECTDETAILS</small><h2 id="cardHeading">Project bewerken</h2></div><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div>
       <label><span id="titleLabel">Projectnaam</span><input id="cardTitle" required maxlength="200" placeholder="225063, AP04 Enschede"></label>
       <label><span id="commentLabel">Opmerkingen</span><textarea id="cardComment" rows="6" placeholder="Ruimte voor opmerkingen, afspraken en extra informatie…"></textarea></label>
+      <label>Projectteam<select id="cardTeam"></select></label>
       <div class="form-row"><label><span id="dateLabel">Due date / veldwerk</span><input id="dueDate" type="date"></label><label id="leadField" hidden><span id="leadLabel">Waarschuw vooraf</span><div class="input-unit"><input id="alertDays" type="number" min="0" max="3650" step="1" value="1"><span>dagen</span></div></label></div>
       <p class="help">De datumherinnering komt om 09:00, standaard 1 dag vooraf.</p>
+      <fieldset id="dueAudience"><legend>Wie krijgt de datumherinnering?</legend><div id="dueRecipients" class="recipient-list"></div></fieldset>
       <fieldset><legend>Individuele herinnering</legend><label for="timerAt">Datum en tijd</label><div class="timer-row"><input id="timerAt" type="datetime-local"><button type="button" id="clearTimer">Wissen</button></div><p class="help">Los van de datum hierboven. Laat leeg als er geen extra alarm nodig is.</p></fieldset>
+      <fieldset><legend>Wie krijgt het individuele alarm?</legend><div id="timerRecipients" class="recipient-list"></div></fieldset>
       <label>Kolom<select id="moveCard"></select></label>
       <div class="dialog-footer"><button type="button" class="danger" id="deleteCard">Project verwijderen</button><span class="spacer"></span><button type="button" data-close>Annuleren</button><button type="submit" class="primary">Opslaan</button></div>
     </form>
@@ -41,6 +49,7 @@
       <label>Kolomnaam<input id="columnName" required maxlength="100"></label>
       <fieldset><legend>Herinnering per kaart</legend><label class="check-label"><input type="checkbox" id="columnReminderEnabled"> Waarschuw als een kaart te lang in deze kolom staat</label><label id="columnDelayField" hidden>Na<div class="input-unit"><input id="columnDays" type="number" min="1" max="3650" step="1" value="1"><span>dagen</span></div></label><p class="help">Iedere kaart heeft zijn eigen klok. Die start opnieuw zodra je de kaart naar een andere kolom verplaatst.</p></fieldset>
       <div class="column-actions"><button type="button" id="insertLeft">← Kolom links invoegen</button><button type="button" id="insertRight">Kolom rechts invoegen →</button></div>
+      <fieldset><legend>Ontvangers kolomherinnering</legend><div id="columnRecipients" class="recipient-list"></div></fieldset>
       <div class="dialog-footer"><button type="button" class="danger" id="deleteColumn">Kolom verwijderen</button><span class="spacer"></span><button type="submit" class="primary">Opslaan</button></div>
     </form>
   </dialog>
@@ -50,5 +59,8 @@
   <dialog id="settingsDialog" aria-labelledby="settingsHeading"><form id="settingsForm"><div class="dialog-heading"><h2 id="settingsHeading">Veldnamen aanpassen</h2><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div><p class="help">Deze namen gelden voor alle projecten op dit bord.</p><label>Projectnaam<input id="settingTitle" required maxlength="60"></label><label>Opmerkingen<input id="settingComment" required maxlength="60"></label><label>Datumveld<input id="settingDate" required maxlength="60"></label><label>Herinnering vooraf<input id="settingLead" required maxlength="60"></label><div class="dialog-footer"><button type="button" data-close>Annuleren</button><button type="submit" class="primary">Opslaan</button></div></form></dialog>
   <dialog id="notificationDialog" aria-labelledby="notificationHeading"><div class="dialog-heading"><h2 id="notificationHeading">Meldingen</h2><button class="icon" data-close aria-label="Sluiten">×</button></div><button id="markRead">Alles als gelezen markeren</button><p class="help">Klik op een melding om het bijbehorende project te openen.</p><div id="notificationList"></div><p class="help">Laat dit bord open voor herinneringen. Bij terugkomst worden gemiste herinneringen opgehaald.</p></dialog>
   <div id="toasts" class="toasts" aria-live="polite"></div>
+  <dialog id="teamsDialog"><div class="dialog-heading"><h2>Teams</h2><button class="icon" data-close aria-label="Sluiten">×</button></div><p class="help">Iedereen hoort bij Iedereen. Teams zijn voor indeling en meldingen; alle deelnemers mogen het hele bord en de teams bewerken.</p><div id="teamList"></div><form id="addTeamForm"><label>Nieuw team<input id="newTeamName" required maxlength="60"></label><button class="primary">Team maken</button></form></dialog>
+  <dialog id="profileDialog"><form id="profileForm"><div class="dialog-heading"><h2>Jouw gastprofiel</h2><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div><label>Je naam<input id="guestName" required maxlength="60"></label><p class="help">Je browser onthoudt dit profiel. Op een andere browser of na het wissen van cookies krijg je een nieuw profiel.</p><div id="myTeams"></div><label id="workspaceCodeField">Uitnodigingscode<input id="workspaceCode" type="password" autocomplete="off"><small>Vraag de beheerder om de code voor dit gedeelde bord.</small></label><p id="connectionStatus" class="help"></p><div class="dialog-footer"><button type="button" id="importLocal">Lokaal bord overnemen</button><button class="primary">Opslaan / verbinden</button></div></form></dialog>
+  <dialog id="syncConflict"><h2>Wijzigingen nog niet gedeeld</h2><p id="syncError"></p><p class="help">Je lokale werk blijft bewaard. Download het eerst als reservekopie voordat je de gedeelde versie opnieuw laadt.</p><div class="dialog-footer"><button id="downloadDraft">Reservekopie downloaden</button><button id="retrySync">Opnieuw proberen</button><button id="reloadShared">Gedeeld bord laden</button></div></dialog>
 </body>
 </html>

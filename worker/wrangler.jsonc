@@ -1,0 +1,11 @@
+{
+  "name": "planboard-reminders",
+  "main": "reminders.mjs",
+  "compatibility_date": "2026-09-09",
+  "triggers": {"crons": ["* * * * *"]},
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "planboard",
+    "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+  }]
+}

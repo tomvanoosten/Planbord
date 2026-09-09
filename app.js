@@ -1,4 +1,4 @@
-/* Planboard: browser-only UI. All saved data stays in this browser. */
+/* Planboard UI, with optional same-origin shared workspace. */
 'use strict';
 const C = BoardCore;
 const $ = id => document.getElementById(id);
@@ -19,6 +19,7 @@ function save() {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
     $('saveStatus').textContent = 'Opgeslagen in deze browser';
+    window.Shared?.save(state);
   } catch {
     $('storageWarning').hidden = false;
     $('storageWarning').textContent = 'Opslaan lukt niet in deze browser. Houd deze pagina open om wijzigingen niet te verliezen.';
@@ -42,7 +43,7 @@ function toast(text, cardId) {
 function render() {
   $('board').innerHTML = state.columns.map(col => {
     const all = state.cards.filter(c => c.column === col.id);
-    const cards = all.filter(c => (c.title + ' ' + c.comment).toLocaleLowerCase().includes(search));
+    const cards = all.filter(c => (!window.Teams || window.Teams.matches(c)) && (c.title + ' ' + c.comment).toLocaleLowerCase().includes(search));
     return '<section class="column" data-column="' + esc(col.id) + '"><div class="column-head">' +
       '<button class="column-options" data-options="' + esc(col.id) + '" title="' + esc(col.name) + ' · kolomopties"><span class="column-name">' + esc(col.name) + '</span><span class="count">(' + all.length + ')</span><span class="dots">···</span></button>' +
       '<button class="add-card" data-add="' + esc(col.id) + '" aria-label="Project toevoegen aan ' + esc(col.name) + '">＋</button></div>' +
@@ -56,6 +57,7 @@ function render() {
   }).join('') + '<button class="column-end" data-new-column>＋ Kolom toevoegen</button>';
   $('projectCount').textContent = state.cards.length + ' projecten · ' + state.columns.length + ' kolommen';
   renderNotifications();
+  window.Teams?.refresh();
 }
 function openCard(id, column) {
   const found = id ? state.cards.find(c => String(c.id) === String(id)) : null;
@@ -75,15 +77,17 @@ function openCard(id, column) {
   $('moveCard').innerHTML = state.columns.map(col => '<option value="' + esc(col.id) + '">' + esc(col.name) + '</option>').join('');
   $('moveCard').value = activeCard.column;
   $('deleteCard').hidden = !found;
+  window.Teams?.openCard(activeCard);
   if (!$('cardDialog').open) show('cardDialog');
   $('cardTitle').focus();
 }
 $('cardForm').onsubmit = event => {
   event.preventDefault();
+  if (window.Teams && !window.Teams.validate(['dueRecipients','timerRecipients'])) return;
   const name = $('cardTitle').value.trim();
   if (!name) return toast('Vul een projectnaam in.');
   const card = C.update(activeCard, {title: name, comment: $('cardComment').value, due: $('dueDate').value,
-    alert: Number($('alertDays').value), timerAt: $('timerAt').value, column: $('moveCard').value});
+    alert: Number($('alertDays').value), timerAt: $('timerAt').value, column: $('moveCard').value, ...(window.Teams?.cardFields() || {})});
   const index = state.cards.findIndex(c => c.id === card.id);
   if (index < 0) state.cards.push(card); else state.cards[index] = card;
   save(); render(); $('cardDialog').close(); toast('Project opgeslagen.'); checkAlerts();
@@ -98,15 +102,18 @@ function openColumn(id) {
   $('columnDays').value = Number(activeColumn.reminder) || 1;
   $('columnDelayField').hidden = !$('columnReminderEnabled').checked;
   $('deleteColumn').disabled = state.columns.length < 2;
+  window.Teams?.openColumn(activeColumn);
   show('columnDialog');
 }
 $('columnReminderEnabled').onchange = () => { $('columnDelayField').hidden = !$('columnReminderEnabled').checked; };
 $('columnForm').onsubmit = event => {
   event.preventDefault();
+  if (window.Teams && !window.Teams.validate(['columnRecipients'])) return;
   const name = $('columnName').value.trim();
   if (!name) return toast('Vul een kolomnaam in.');
   activeColumn.name = name;
   activeColumn.reminder = $('columnReminderEnabled').checked ? Number($('columnDays').value) : '';
+  if (window.Teams) activeColumn.recipients = window.Teams.recipients('columnRecipients');
   save(); render(); $('columnDialog').close(); toast('Kolom opgeslagen.'); checkAlerts();
 };
 function addColumn(index) {
@@ -125,6 +132,8 @@ $('nameForm').onsubmit = event => {
   save(); render(); $('nameDialog').close(); $('columnDialog').close(); toast('Kolom toegevoegd.');
 };
 function askDelete(text, action) {
+  $('confirmHeading').textContent = 'Weet je het zeker?';
+  $('confirmDelete').textContent = 'Verwijderen';
   pendingDelete = action;
   $('confirmText').textContent = text;
   show('confirmDialog');
@@ -203,8 +212,9 @@ $('settingsForm').onsubmit = event => {
   save(); render(); $('settingsDialog').close(); toast('Veldnamen opgeslagen.');
 };
 function renderNotifications() {
-  $('badge').textContent = state.notifications.filter(n => !n.read).length;
-  $('notificationList').innerHTML = state.notifications.length ? state.notifications.map((n, i) =>
+  const visible = state.notifications.map((n,i) => ({n,i})).filter(({n}) => window.Shared?.enabled || !window.Teams || C.receives(n,window.Teams.me()));
+  $('badge').textContent = visible.filter(({n}) => !n.read).length;
+  $('notificationList').innerHTML = visible.length ? visible.map(({n,i}) =>
     '<button class="notification ' + (n.read ? '' : 'unread') + '" data-notice="' + i + '"><strong>' + esc(n.title) + '</strong><small>' + esc(n.text) + '</small></button>').join('') : '<p class="help">Je hebt nog geen meldingen.</p>';
 }
 $('bell').onclick = () => { renderNotifications(); show('notificationDialog'); };
@@ -228,11 +238,13 @@ function notify(note) {
   } catch { toast('De desktopmelding kon niet worden getoond. Je melding staat in het meldingenoverzicht.'); }
 }
 function checkAlerts() {
+  if (window.Shared?.enabled) return;
   const notes = C.collect(state);
   if (!notes.length) return;
-  save(); renderNotifications(); notes.forEach(notify);
+  save(); renderNotifications(); notes.filter(n => !window.Teams || C.receives(n, window.Teams.me())).forEach(notify);
 }
 $('desktopNotifications').onclick = async () => {
+  if (window.Shared?.enabled) return window.Shared.enablePush();
   if (!('Notification' in window) || !window.isSecureContext) return toast('Desktopmeldingen vereisen een ondersteunde browser op HTTPS of localhost.');
   try {
     const permission = await Notification.requestPermission();
