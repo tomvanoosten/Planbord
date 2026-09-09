@@ -15,6 +15,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 #badge{background:white;color:#632563;border-radius:12px;padding:1px 5px;margin-left:5px;font-size:10px}
 .commandbar{min-height:45px;padding:7px 20px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid #edebe9}
 .commandbar button:not(.primary){border-color:transparent}.commandbar button{font-size:12px}
+.push-status{align-self:center;color:#777;font-size:11px;padding:0 4px}
 .board-heading{display:flex;align-items:center;gap:12px;padding:18px 24px 16px;flex:none}
 .board-icon{width:33px;height:35px;border-radius:4px;background:#5545bc;color:white;display:grid;place-items:center;font-size:23px}
 .board-heading small{color:#777;font-size:11px}h1{font-size:20px;font-weight:600;margin:1px 0}

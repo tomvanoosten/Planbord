@@ -37,5 +37,9 @@ CREATE TABLE IF NOT EXISTS join_limits (
   key TEXT PRIMARY KEY,
   count INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS delivery_member ON deliveries(member,seen);
 CREATE INDEX IF NOT EXISTS subscription_member ON subscriptions(member);

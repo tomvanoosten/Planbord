@@ -6,7 +6,29 @@ const json = (data,status=200,headers={}) => new Response(JSON.stringify(data),{
 const error = (message,status=400) => Object.assign(new Error(message),{status});
 const hash = async s => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))),b=>b.toString(16).padStart(2,'0')).join('');
 const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
+const b64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
 const memberView = m => ({id:m.id,name:m.name,teams:JSON.parse(m.teams)});
+async function pushSettings(env) {
+  if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_JWK && env.PUSH_SUBJECT) return env;
+  if (!env.DB) return env;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL)').run();
+  const rows=(await env.DB.prepare("SELECT key,value FROM app_settings WHERE key IN ('vapid_public','vapid_private','push_subject')").all()).results;
+  const values=Object.fromEntries(rows.map(r=>[r.key,r.value]));
+  return {...env,VAPID_PUBLIC_KEY:values.vapid_public,VAPID_PRIVATE_JWK:values.vapid_private,PUSH_SUBJECT:values.push_subject};
+}
+async function createPushSettings(env,subject) {
+  const current=await pushSettings(env);
+  if (current.VAPID_PUBLIC_KEY && current.VAPID_PRIVATE_JWK && current.PUSH_SUBJECT) return current;
+  const pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const pub=await crypto.subtle.exportKey('jwk',pair.publicKey),priv=await crypto.subtle.exportKey('jwk',pair.privateKey);
+  const raw=new Uint8Array(65); raw[0]=4; raw.set(Uint8Array.from(atob(pub.x.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0)),1); raw.set(Uint8Array.from(atob(pub.y.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0)),33);
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR IGNORE INTO app_settings(key,value) VALUES('vapid_public',?)").bind(b64(raw)),
+    env.DB.prepare("INSERT OR IGNORE INTO app_settings(key,value) VALUES('vapid_private',?)").bind(JSON.stringify(priv)),
+    env.DB.prepare("INSERT OR IGNORE INTO app_settings(key,value) VALUES('push_subject',?)").bind(subject)
+  ]);
+  return pushSettings(env);
+}
 async function row(env) {
   let r = await env.DB.prepare('SELECT * FROM board WHERE id=1').first();
   if (!r) {
@@ -89,7 +111,7 @@ export async function api(request,env,ctx={waitUntil(){}}) {
       const origin=request.headers.get('Origin');
       if (origin!==url.origin) throw error('Ongeldige herkomst.',403);
     }
-    if (path==='config'&&request.method==='GET') return json({ready:!!(env.DB&&env.WORKSPACE_CODE),publicKey:env.VAPID_PUBLIC_KEY||null});
+    if (path==='config'&&request.method==='GET') { const push=await pushSettings(env); return json({ready:!!(env.DB&&env.WORKSPACE_CODE),publicKey:push.VAPID_PUBLIC_KEY||null}); }
     if (!env.DB||!env.WORKSPACE_CODE) throw error('De beheerder moet de database en uitnodigingscode nog instellen.',503);
     if (path==='join'&&request.method==='POST') {
       const b = await body(request);
@@ -104,6 +126,10 @@ export async function api(request,env,ctx={waitUntil(){}}) {
       return json({ok:true},200,{'Set-Cookie':'pb_session='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000'});
     }
     const m = await auth(request,env);
+    if (path==='push-setup'&&request.method==='POST') {
+      const push=await createPushSettings(env,new URL(request.url).origin);
+      return json({ok:true,publicKey:push.VAPID_PUBLIC_KEY});
+    }
     if (path==='board'&&request.method==='GET') return json(await envelope(env,m));
     if (path==='board'&&request.method==='PUT') {
       const b=await body(request),r=await row(env);
@@ -175,6 +201,7 @@ export async function tick(env) {
   await dispatch(env);
 }
 export async function dispatch(env) {
+  env=await pushSettings(env);
   if(!env.VAPID_PRIVATE_JWK||!env.VAPID_PUBLIC_KEY||!env.PUSH_SUBJECT) return;
   const cutoff=Date.now();
   const jobs=(await env.DB.prepare('SELECT notice,endpoint,attempts FROM push_jobs WHERE retry_at<=? AND attempts<8 LIMIT 5').bind(cutoff).all()).results;

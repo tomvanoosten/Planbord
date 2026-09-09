@@ -2,6 +2,11 @@
 (() => {
   let enabled = false, available = false, version = 0, busy = false, dirty = false, blocked = false, debounce;
   let seen = new Set();
+  function showPushStatus(config) {
+    const ready=!!config?.publicKey;
+    $('pushStatus').textContent=ready ? 'Achtergrondherinneringen: sleutels ingesteld' : 'Achtergrondherinneringen: nog niet ingesteld';
+    $('backgroundSetup').hidden=ready;
+  }
   async function api(path, options = {}) {
     const response = await fetch('/api/' + path, {credentials:'same-origin', ...options,
       headers:{'Content-Type':'application/json', ...options.headers}});
@@ -85,7 +90,8 @@
       const permission = await Notification.requestPermission();
       if (permission !== 'granted') return toast('Sta meldingen toe in je browserinstellingen.');
       const config = await api('config');
-      if (!config.publicKey) return toast('De beheerder moet de pushsleutels nog instellen.');
+      showPushStatus(config);
+      if (!config.publicKey) return toast('Achtergrondherinneringen zijn nog niet ingesteld.');
       const registration = await navigator.serviceWorker.register('/sw.js');
       await navigator.serviceWorker.ready;
       const raw = atob(config.publicKey.replace(/-/g,'+').replace(/_/g,'/'));
@@ -93,6 +99,7 @@
       const subscription = await registration.pushManager.getSubscription() ||
         await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
       await api('subscription', {method:'POST',body:JSON.stringify(subscription.toJSON())});
+      $('desktopNotifications').textContent='Meldingen staan aan op dit apparaat';
       toast('Achtergrondmeldingen ingeschakeld voor jouw profiel.');
     } catch (error) { toast(error.message); }
   }
@@ -105,6 +112,14 @@
       clearTimeout(debounce); debounce = setTimeout(flush,250);
       $('saveStatus').textContent = 'Delen…';
     }
+  };
+  $('backgroundSetup').onclick = async () => {
+    if (!enabled) return toast('Verbind eerst je gastprofiel.');
+    try {
+      const config=await api('push-setup',{method:'POST',body:'{}'});
+      showPushStatus(config);
+      toast('Achtergrondherinneringen zijn ingesteld. Iedere gebruiker kan nu meldingen op zijn eigen apparaat inschakelen.');
+    } catch(error) { toast(error.message); }
   };
   $('retrySync').onclick = () => { blocked = false; $('syncConflict').close(); flush(); };
   $('downloadDraft').onclick = () => {
@@ -171,7 +186,7 @@
   async function init() {
     if (!location.protocol.startsWith('http')) return;
     try {
-      const config = await api('config'); available = config.ready;
+      const config = await api('config'); available = config.ready; showPushStatus(config);
       if (!available) return;
       const data = await api('board');
       // Keep a recoverable draft after refresh, including a network failure.
