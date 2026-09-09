@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Projectstatus · Planboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="board-core.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="appbar"><span class="appmark" aria-hidden="true">▦</span><strong>Planboard</strong><span class="appbar-caption">Projecten op een rij</span><button id="bell" title="Meldingen">Meldingen <span id="badge">0</span></button></header>
+  <nav class="commandbar" aria-label="Bordacties">
+    <button class="primary" id="newCard">＋ Nieuw project</button>
+    <button id="newColumn">＋ Kolom toevoegen</button>
+    <button id="settingsButton">⚙ Veldnamen</button>
+    <button id="desktopNotifications">Meldingen inschakelen</button>
+    <button id="testNotification">Testmelding</button>
+  </nav>
+  <section class="board-heading"><div class="board-icon" aria-hidden="true">▤</div><div><small>Mijn lijsten</small><h1>Projectstatus</h1></div><div class="board-tools"><label class="search"><span class="sr-only">Zoek projecten</span><input id="search" type="search" placeholder="Zoek projecten…"></label><span class="view-name">▦ Bord</span></div></section>
+  <p id="storageWarning" role="alert" hidden></p>
+  <main id="board" class="board" aria-label="Projecten per kolom"></main>
+  <footer class="statusbar"><span id="projectCount"></span><span id="saveStatus">Opgeslagen in deze browser</span><span>Sleep een kaart naar een kolom · klik om te bewerken</span></footer>
+
+  <dialog id="cardDialog" aria-labelledby="cardHeading">
+    <form id="cardForm">
+      <div class="dialog-heading"><div><small>PROJECTDETAILS</small><h2 id="cardHeading">Project bewerken</h2></div><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div>
+      <label><span id="titleLabel">Projectnaam</span><input id="cardTitle" required maxlength="200" placeholder="225063, AP04 Enschede"></label>
+      <label><span id="commentLabel">Opmerkingen</span><textarea id="cardComment" rows="6" placeholder="Ruimte voor opmerkingen, afspraken en extra informatie…"></textarea></label>
+      <div class="form-row"><label><span id="dateLabel">Due date / veldwerk</span><input id="dueDate" type="date"></label><label id="leadField" hidden><span id="leadLabel">Waarschuw vooraf</span><div class="input-unit"><input id="alertDays" type="number" min="0" max="3650" step="1" value="1"><span>dagen</span></div></label></div>
+      <p class="help">De datumherinnering komt om 09:00, standaard 1 dag vooraf.</p>
+      <fieldset><legend>Individuele herinnering</legend><label for="timerAt">Datum en tijd</label><div class="timer-row"><input id="timerAt" type="datetime-local"><button type="button" id="clearTimer">Wissen</button></div><p class="help">Los van de datum hierboven. Laat leeg als er geen extra alarm nodig is.</p></fieldset>
+      <label>Kolom<select id="moveCard"></select></label>
+      <div class="dialog-footer"><button type="button" class="danger" id="deleteCard">Project verwijderen</button><span class="spacer"></span><button type="button" data-close>Annuleren</button><button type="submit" class="primary">Opslaan</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="columnDialog" aria-labelledby="columnHeading">
+    <form id="columnForm">
+      <div class="dialog-heading"><h2 id="columnHeading">Kolomopties</h2><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div>
+      <label>Kolomnaam<input id="columnName" required maxlength="100"></label>
+      <fieldset><legend>Herinnering per kaart</legend><label class="check-label"><input type="checkbox" id="columnReminderEnabled"> Waarschuw als een kaart te lang in deze kolom staat</label><label id="columnDelayField" hidden>Na<div class="input-unit"><input id="columnDays" type="number" min="1" max="3650" step="1" value="1"><span>dagen</span></div></label><p class="help">Iedere kaart heeft zijn eigen klok. Die start opnieuw zodra je de kaart naar een andere kolom verplaatst.</p></fieldset>
+      <div class="column-actions"><button type="button" id="insertLeft">← Kolom links invoegen</button><button type="button" id="insertRight">Kolom rechts invoegen →</button></div>
+      <div class="dialog-footer"><button type="button" class="danger" id="deleteColumn">Kolom verwijderen</button><span class="spacer"></span><button type="submit" class="primary">Opslaan</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="nameDialog" aria-labelledby="nameHeading"><form id="nameForm"><div class="dialog-heading"><h2 id="nameHeading">Kolom toevoegen</h2><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div><label>Naam<input id="newColumnName" required maxlength="100"></label><div class="dialog-footer"><button type="button" data-close>Annuleren</button><button class="primary" type="submit">Toevoegen</button></div></form></dialog>
+  <dialog id="confirmDialog" aria-labelledby="confirmHeading"><div class="dialog-heading"><h2 id="confirmHeading">Weet je het zeker?</h2></div><p id="confirmText"></p><div class="dialog-footer"><button data-close>Annuleren</button><button id="confirmDelete" class="danger-solid">Verwijderen</button></div></dialog>
+  <dialog id="settingsDialog" aria-labelledby="settingsHeading"><form id="settingsForm"><div class="dialog-heading"><h2 id="settingsHeading">Veldnamen aanpassen</h2><button type="button" class="icon" data-close aria-label="Sluiten">×</button></div><p class="help">Deze namen gelden voor alle projecten op dit bord.</p><label>Projectnaam<input id="settingTitle" required maxlength="60"></label><label>Opmerkingen<input id="settingComment" required maxlength="60"></label><label>Datumveld<input id="settingDate" required maxlength="60"></label><label>Herinnering vooraf<input id="settingLead" required maxlength="60"></label><div class="dialog-footer"><button type="button" data-close>Annuleren</button><button type="submit" class="primary">Opslaan</button></div></form></dialog>
+  <dialog id="notificationDialog" aria-labelledby="notificationHeading"><div class="dialog-heading"><h2 id="notificationHeading">Meldingen</h2><button class="icon" data-close aria-label="Sluiten">×</button></div><button id="markRead">Alles als gelezen markeren</button><p class="help">Klik op een melding om het bijbehorende project te openen.</p><div id="notificationList"></div><p class="help">Laat dit bord open voor herinneringen. Bij terugkomst worden gemiste herinneringen opgehaald.</p></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>
