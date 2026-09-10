@@ -4,6 +4,8 @@
   const DAY = 86400000;
   const labels = {title: 'Projectnaam', comment: 'Opmerkingen', date: 'Due date / veldwerk', lead: 'Waarschuw vooraf'};
   const uid = () => 'id-' + (globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2));
+  const width = value => Math.max(160, Math.min(600, Math.round(Number(value) || 218)));
+  const color = (value, id = '') => /^#[0-9a-f]{6}$/i.test(value || '') ? value : ['#548c68','#627bb5','#aa7199','#b68543','#58969c','#8975ad'][Array.from(id).reduce((n,c)=>n+c.charCodeAt(0),0)%6];
   function seed(now = Date.now()) {
     const names = ['Nieuwe projecten', 'Qfield order maken', 'VWO maken', 'VWO ligt bij controle', 'VWO ligt in de bak', 'Veldwerkformulieren', 'Veldwerk gepland', 'Rapportage afmaken', 'Rapportage bij controle', 'Rapportage verstuurd'];
     return {version: 2, labels: {...labels}, columns: names.map((name, i) => ({id: 'stage-' + i, name, reminder: ''})), cards: [
@@ -59,7 +61,7 @@
     });
     return events;
   }
-  const api = {DAY, uid, labels, seed, normalize, move, update, dueTime, collect};
+  const api = {DAY, uid, labels, seed, normalize, move, update, dueTime, collect, width, color};
   api.receives = (notice, member) => (notice.recipients || ['team:everyone']).some(r =>
     r === 'team:everyone' || r === 'user:' + member.id || (member.teams || []).some(t => r === 'team:' + t));
   root.BoardCore = api;

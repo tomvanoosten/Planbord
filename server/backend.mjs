@@ -7,7 +7,14 @@ const error = (message,status=400) => Object.assign(new Error(message),{status})
 const hash = async s => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))),b=>b.toString(16).padStart(2,'0')).join('');
 const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
 const b64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
-const memberView = m => ({id:m.id,name:m.name,teams:JSON.parse(m.teams)});
+const memberView = m => ({id:m.id,name:m.name,teams:JSON.parse(m.teams),color:C.color(m.color,m.id)});
+async function settingsTable(env) {
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL)').run();
+}
+async function membersWithColors(env) {
+  await settingsTable(env);
+  return (await env.DB.prepare("SELECT m.*,s.value AS color FROM members m LEFT JOIN app_settings s ON s.key='member_color:'||m.id WHERE m.expires>?").bind(Date.now()).all()).results;
+}
 async function pushSettings(env) {
   if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_JWK && env.PUSH_SUBJECT) return env;
   if (!env.DB) return env;
@@ -67,7 +74,7 @@ function validBoard(input,old,members) {
     if (!Array.isArray(a) || !a.length || a.length>200 || a.some(x=>!recipientSet.has(x))) throw error('Ongeldige ontvangers.');
     return [...new Set(a)];
   };
-  s.columns = s.columns.map(col=>({id:String(col.id),name:cleanName(col.name,100),
+  s.columns = s.columns.map(col=>({id:String(col.id),name:cleanName(col.name,100),width:C.width(col.width ?? old.columns.find(x=>x.id===col.id)?.width),
     reminder:col.reminder==='' ? '' : Number(col.reminder || 0), recipients:recipients(col.recipients)}));
   if (s.columns.some(c=>c.reminder!==''&&(!Number.isInteger(c.reminder)||c.reminder<0||c.reminder>3650))) throw error('Ongeldige kolomduur.');
   for (const [key,value] of Object.entries(s.labels)) if (!['title','comment','date','lead'].includes(key) || typeof value !== 'string' || value.length>60) throw error('Ongeldige veldnamen.');
@@ -77,8 +84,10 @@ function validBoard(input,old,members) {
     if (c.due && !/^\d{4}-\d{2}-\d{2}$/.test(c.due)) throw error('Ongeldige datum.');
     if (c.timerAt && !Number.isFinite(new Date(c.timerAt).getTime())) throw error('Ongeldige timer.');
     const prev = old.cards.find(x=>x.id===c.id);
+    const assignees=c.assignees ?? prev?.assignees ?? [];
+    if (!Array.isArray(assignees) || assignees.length>100 || assignees.some(id=>!members.some(m=>m.id===id))) throw error('Ongeldige verantwoordelijke.');
     const card = {id:c.id,title:cleanName(c.title),comment:c.comment,due:c.due,alert:c.alert,
-      timerAt:c.timerAt,column:c.column,teamId:c.teamId||'everyone',
+      timerAt:c.timerAt,column:c.column,teamId:c.teamId||'everyone',assignees:[...new Set(assignees)],
       dueRecipients:recipients(c.dueRecipients),timerRecipients:recipients(c.timerRecipients),
       enteredAt:prev?.column===c.column?prev.enteredAt:Date.now(),
       dueEpoch:c.due ? Number(c.dueEpoch ?? C.dueTime(c.due,c.alert)):null,
@@ -99,8 +108,8 @@ async function inbox(env,id,unread=false) {
 }
 async function envelope(env,m) {
   const r = await row(env);
-  const members = (await env.DB.prepare('SELECT * FROM members WHERE expires>?').bind(Date.now()).all()).results;
-  return {state:JSON.parse(r.data),version:r.version,me:memberView(m),members:members.map(memberView),notifications:await inbox(env,m.id)};
+  const members = await membersWithColors(env);
+  return {state:JSON.parse(r.data),version:r.version,me:memberView(members.find(p=>p.id===m.id)||m),members:members.map(memberView),notifications:await inbox(env,m.id)};
 }
 export async function api(request,env,ctx={waitUntil(){}}) {
   try {
@@ -130,7 +139,16 @@ export async function api(request,env,ctx={waitUntil(){}}) {
       const push=await createPushSettings(env,new URL(request.url).origin);
       return json({ok:true,publicKey:push.VAPID_PUBLIC_KEY});
     }
-    if (path==='board'&&request.method==='GET') return json(await envelope(env,m));
+    if (path==='board'&&request.method==='GET') { await tick(env,{dispatchPush:false}); return json(await envelope(env,m)); }
+    if (path==='backup'&&request.method==='GET') return json({format:'planboard-backup',exportedAt:new Date().toISOString(),...await envelope(env,m)});
+    if (path==='notification-status'&&request.method==='GET') {
+      const push=await pushSettings(env);
+      const last=await env.DB.prepare("SELECT value FROM app_settings WHERE key='scheduler_success'").first();
+      const subscribed=url.searchParams.get('endpoint');
+      const registered=subscribed ? await env.DB.prepare('SELECT endpoint FROM subscriptions WHERE member=? AND endpoint=?').bind(m.id,subscribed).first() : null;
+      const pending=registered ? await env.DB.prepare('SELECT COUNT(*) AS count FROM push_jobs WHERE endpoint=? AND attempts>=2').bind(subscribed).first() : null;
+      return json({publicKey:push.VAPID_PUBLIC_KEY||null,schedulerAt:Number(last?.value)||null,schedulerActive:!!last&&Date.now()-Number(last.value)<180000,registered:!!registered,deliveryProblems:Number(pending?.count)||0});
+    }
     if (path==='board'&&request.method==='PUT') {
       const b=await body(request),r=await row(env);
       if (b.version!==r.version) throw error('Een collega heeft het bord gewijzigd.',409);
@@ -144,7 +162,12 @@ export async function api(request,env,ctx={waitUntil(){}}) {
     if (path==='profile'&&request.method==='PUT') {
       const b=await body(request),s=JSON.parse((await row(env)).data);
       if (!Array.isArray(b.teams) || b.teams.some(id=>!s.teams.some(t=>t.id===id))) throw error('Ongeldige teams.');
+      if (b.color!==undefined && !/^#[0-9a-f]{6}$/i.test(b.color)) throw error('Ongeldige kleur.');
       await env.DB.prepare('UPDATE members SET name=?,teams=? WHERE id=?').bind(cleanName(b.name,60),JSON.stringify([...new Set(b.teams)]),m.id).run();
+      if (b.color!==undefined) {
+        await settingsTable(env);
+        await env.DB.prepare('INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind('member_color:'+m.id,b.color).run();
+      }
       return json({ok:true});
     }
     if (path==='read'&&request.method==='POST') {
@@ -185,7 +208,7 @@ async function noticeStatements(env,n,ids,stamp) {
   statements.push(env.DB.prepare('INSERT OR IGNORE INTO push_jobs(notice,endpoint) SELECT ?,endpoint FROM subscriptions WHERE member IN (SELECT value FROM json_each(?))'+guard).bind(n.id,targets,...args));
   return statements;
 }
-export async function tick(env) {
+export async function tick(env,{scheduled=false,dispatchPush=true}={}) {
   if(!env.DB) return;
   for(let attempt=0;attempt<1;attempt++) {
     const r=await row(env),state=C.normalize(JSON.parse(r.data));
@@ -198,7 +221,11 @@ export async function tick(env) {
     const results=await env.DB.batch(statements);
     if(results[0].meta.changes) break;
   }
-  await dispatch(env);
+  if (dispatchPush) await dispatch(env);
+  if (scheduled) {
+    await settingsTable(env);
+    await env.DB.prepare("INSERT INTO app_settings(key,value) VALUES('scheduler_success',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(Date.now())).run();
+  }
 }
 export async function dispatch(env) {
   env=await pushSettings(env);

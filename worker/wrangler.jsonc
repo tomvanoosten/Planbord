@@ -5,7 +5,7 @@
   "triggers": {"crons": ["* * * * *"]},
   "d1_databases": [{
     "binding": "DB",
-    "database_name": "planboard",
+    "database_name": "db",
     "database_id": "ff298341-5196-4d33-8844-2df2886ecec6"
   }]
 }

@@ -5,6 +5,9 @@
   guest ||= {id: C.uid(), name: 'Gast', teams: []};
   let people = [];
   let filter = 'everyone';
+  let onlyMine=false;
+  const assigned = card => (card.assignees||[]).map(id=>(people.length?people:[guest]).find(p=>p.id===id)||{id,name:'Voormalig lid'});
+  const personChip = p => '<span class="person-chip" style="--person-color:'+C.color(p.color,p.id)+'" title="'+esc(p.name)+'">'+esc(p.name)+'</span>';
   state = C.normalize(state);
   const persistGuest = () => localStorage.setItem('planboard-guest', JSON.stringify(guest));
   function options(selected) {
@@ -38,6 +41,8 @@
     me: () => guest,
     setPeople(me, members) { guest = me; people = members; persistGuest(); refresh(); },
     refresh, recipients,
+    cardStyle: card => { const first=assigned(card)[0]; return first?'--owner-color:'+C.color(first.color,first.id)+';background:color-mix(in srgb,'+C.color(first.color,first.id)+' 12%,white);border-left:3px solid '+C.color(first.color,first.id):''; },
+    cardPeople: card => '<span class="card-people">'+assigned(card).map(personChip).join('')+'</span>',
     validate(ids) {
       for (const id of ids) {
         const input = $(id).querySelector('input');
@@ -46,14 +51,20 @@
       }
       return true;
     },
-    matches: card => filter === 'everyone' || card.teamId === filter,
+    matches: card => (!onlyMine||(card.assignees||[]).includes(guest.id))&&(filter === 'everyone' || card.teamId === filter),
     openCard(card) {
       $('cardTeam').innerHTML = options(card.teamId || 'everyone');
+      const ids=card.assignees||[];
+      const members=(people.length?people:[guest]).concat(ids.filter(id=>!people.some(p=>p.id===id)&&id!==guest.id).map(id=>({id,name:'Voormalig lid'})));
+      $('cardAssignees').innerHTML=members.map(p=>'<label class="check-label"><input type="checkbox" value="'+esc(p.id)+'"'+(ids.includes(p.id)?' checked':'')+'>'+personChip(p)+'</label>').join('');
+      const count=()=>{ $('assignmentCount').textContent=recipients('cardAssignees').length+' geselecteerd'; };
+      $('cardAssignees').onchange=count; count();
       choices('dueRecipients', card.dueRecipients);
       choices('timerRecipients', card.timerRecipients);
     },
     cardFields: () => ({
       teamId: $('cardTeam').value,
+      assignees: recipients('cardAssignees'),
       dueRecipients: recipients('dueRecipients'), timerRecipients: recipients('timerRecipients'),
       dueEpoch: $('dueDate').value ? C.dueTime($('dueDate').value, Number($('alertDays').value)) : null,
       timerEpoch: $('timerAt').value ? new Date($('timerAt').value).getTime() : null
@@ -61,6 +72,7 @@
     openColumn: col => choices('columnRecipients', col.recipients),
     openProfile() {
       $('guestName').value = guest.name;
+      $('guestColor').value = C.color(guest.color,guest.id);
       memberships();
       $('workspaceCodeField').hidden = !!window.Shared?.enabled;
       $('importLocal').hidden = !window.Shared?.enabled;
@@ -69,6 +81,7 @@
     }
   };
   $('teamFilter').onchange = () => { filter = $('teamFilter').value; render(); };
+  $('onlyMine').onchange = () => { onlyMine=$('onlyMine').checked; render(); };
   $('profileButton').onclick = () => window.Teams.openProfile();
   $('teamsButton').onclick = () => { teamList(); show('teamsDialog'); };
   $('addTeamForm').onsubmit = e => {
@@ -98,9 +111,9 @@
     const teams = Array.from($('myTeams').querySelectorAll('input:checked'), el => el.value).filter(id => id !== 'everyone');
     try {
       if (window.Shared?.available || window.Shared?.enabled) {
-        await window.Shared.profile({name,teams,code:$('workspaceCode').value});
+        await window.Shared.profile({name,teams,color:$('guestColor').value,code:$('workspaceCode').value});
       } else {
-        guest.name = name; guest.teams = teams; persistGuest();
+        guest.name = name; guest.teams = teams; guest.color=$('guestColor').value; persistGuest(); render();
         toast('Gastprofiel lokaal opgeslagen. Gedeeld gebruik is nog niet geactiveerd.');
       }
       $('workspaceCode').value = '';

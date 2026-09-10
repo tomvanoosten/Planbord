@@ -1,5 +1,7 @@
 # Het gedeelde Planboard activeren
 
+Voor de update met instellen vanuit de site en publicatie zonder lokale Node-installatie: zie [UPDATE-2026-09-10.md](UPDATE-2026-09-10.md). De onderstaande stappen met zelf gegenereerde sleutels zijn de oudere, optionele beheerroute.
+
 De bestaande link blijft **https://planbord-285.pages.dev/**.
 De nieuwe code is lokaal voorbereid. Deze handleiding koppelt de gedeelde database en achtergrondmeldingen; alleen bestanden uploaden activeert die diensten niet.
 

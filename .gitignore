@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 node_modules/
+.private/
+.preview/
+planboard-shared-upload.zip
 .wrangler/
 *-private.json
 planboard-reservekopie*.json

@@ -44,12 +44,13 @@ function render() {
   $('board').innerHTML = state.columns.map(col => {
     const all = state.cards.filter(c => c.column === col.id);
     const cards = all.filter(c => (!window.Teams || window.Teams.matches(c)) && (c.title + ' ' + c.comment).toLocaleLowerCase().includes(search));
-    return '<section class="column" data-column="' + esc(col.id) + '"><div class="column-head">' +
+    return '<section class="column" style="width:' + C.width(col.width) + 'px;min-width:' + C.width(col.width) + 'px" data-column="' + esc(col.id) + '"><button class="column-resize" data-resize="' + esc(col.id) + '" aria-label="Breedte aanpassen: ' + esc(col.name) + '" title="Sleep om de breedte te wijzigen; dubbelklik voor standaardbreedte"></button><div class="column-head">' +
       '<button class="column-options" data-options="' + esc(col.id) + '" title="' + esc(col.name) + ' · kolomopties"><span class="column-name">' + esc(col.name) + '</span><span class="count">(' + all.length + ')</span><span class="dots">···</span></button>' +
       '<button class="add-card" data-add="' + esc(col.id) + '" aria-label="Project toevoegen aan ' + esc(col.name) + '">＋</button></div>' +
       (Number(col.reminder) > 0 ? '<div class="column-reminder">◷ Herinnering na ' + col.reminder + ' dag(en)</div>' : '') +
-      '<div class="cards">' + (cards.length ? cards.map(card => '<button class="project-card" draggable="true" data-card="' + esc(card.id) + '">' +
+      '<div class="cards">' + (cards.length ? cards.map(card => '<button class="project-card" style="' + (window.Teams?.cardStyle(card)||'') + '" draggable="true" data-card="' + esc(card.id) + '">' +
       '<span class="card-label">' + esc(state.labels.title) + '</span><span class="card-title">' + esc(card.title) + '</span>' +
+      (window.Teams?.cardPeople(card)||'') +
       ((card.due || card.timerAt || card.comment) ? '<span class="card-meta">' + (card.due ? '<span>▦ ' + esc(card.due.split('-').reverse().join('-')) + '</span>' : '') +
       (card.timerAt ? '<span>◷ Timer</span>' : '') + (card.comment ? '<span>☰ Notitie</span>' : '') + '</span>' : '') + '</button>').join('') :
       '<div class="empty"><span class="empty-symbol" aria-hidden="true">▤</span><p>' + (search ? 'Geen overeenkomende projecten.' : 'Sleep hier een project naartoe of gebruik de + hierboven.') + '</p></div>') +
@@ -172,7 +173,36 @@ $('board').onclick = event => {
   else if (card) openCard(card.dataset.card);
   else if (event.target.closest('[data-new-column]')) addColumn(state.columns.length);
 };
-let dragged = null;
+let dragged = null, resizing = null;
+$('board').onpointerdown = event => {
+  const handle=event.target.closest('[data-resize]');
+  if (!handle || event.button!==0) return;
+  event.preventDefault();
+  const column=state.columns.find(c=>c.id===handle.dataset.resize);
+  resizing={column,handle,element:handle.closest('[data-column]'),start:event.clientX,width:C.width(column.width),next:C.width(column.width)};
+  handle.setPointerCapture(event.pointerId);
+};
+$('board').onpointermove = event => {
+  if (!resizing) return;
+  resizing.next=C.width(resizing.width+event.clientX-resizing.start);
+  resizing.element.style.width=resizing.element.style.minWidth=resizing.next+'px';
+};
+$('board').onpointerup = () => {
+  if (!resizing) return;
+  resizing.column.width=resizing.next; resizing=null; save(); render();
+};
+$('board').onpointercancel = () => { if (resizing) { resizing=null; render(); } };
+$('board').ondblclick = event => {
+  const handle=event.target.closest('[data-resize]');
+  if (!handle) return;
+  state.columns.find(c=>c.id===handle.dataset.resize).width=218; save(); render();
+};
+$('board').onkeydown = event => {
+  const handle=event.target.closest('[data-resize]');
+  if (!handle || !['ArrowLeft','ArrowRight'].includes(event.key)) return;
+  event.preventDefault(); const col=state.columns.find(c=>c.id===handle.dataset.resize);
+  col.width=C.width(C.width(col.width)+(event.key==='ArrowRight'?20:-20));save();render();
+};
 $('board').ondragstart = event => {
   const card = event.target.closest('[data-card]');
   if (!card) return;

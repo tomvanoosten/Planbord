@@ -113,3 +113,50 @@ test('VAPID JWT signs the correct push-service audience',async()=>{
   assert.equal(JSON.parse(Buffer.from(body,'base64url')).aud,'https://fcm.googleapis.com');
   assert.equal(await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'},pair.publicKey,Buffer.from(signature,'base64url'),new TextEncoder().encode(head+'.'+body)),true);
 });
+test('update preserves all existing project data, clocks, widths and assignments through old clients',async()=>{
+  const x=setup(),tom=await x.guest('Tom'),other=await x.guest('Collega');
+  const s=tom.state;
+  s.columns[0].width=340;
+  s.cards.push({id:'existing',title:'Keep this project',comment:'Detailed work notes',column:s.columns[0].id,due:'2099-09-15',alert:1,timerAt:'2099-09-14T13:21',assignees:[tom.me.id,other.me.id]});
+  assert.equal((await x.request('board','PUT',{state:s,version:tom.version},tom.cookie)).status,200);
+  const before=(await x.request('board','GET',undefined,tom.cookie)).body;
+  const oldClient=structuredClone(before.state);delete oldClient.columns[0].width;delete oldClient.cards[0].assignees;
+  assert.equal((await x.request('board','PUT',{state:oldClient,version:before.version},tom.cookie)).status,200);
+  const after=(await x.request('board','GET',undefined,other.cookie)).body;
+  assert.deepEqual(after.state.cards,before.state.cards);
+  assert.equal(after.state.columns[0].width,340);
+  const backup=(await x.request('backup','GET',undefined,tom.cookie)).body;
+  assert.deepEqual(backup.state,after.state);
+  assert.ok(!JSON.stringify(backup).includes('token_hash'));
+});
+test('personal colors are shared and invalid profile changes do not partially save',async()=>{
+  const x=setup(),tom=await x.guest('Tom'),other=await x.guest('Other');
+  assert.equal((await x.request('profile','PUT',{name:'Tom',teams:[],color:'#459056'},tom.cookie)).status,200);
+  const shared=(await x.request('board','GET',undefined,other.cookie)).body;
+  assert.equal(shared.members.find(m=>m.id===tom.me.id).color,'#459056');
+  assert.equal((await x.request('profile','PUT',{name:'Wrong',teams:[],color:'red;bad'},tom.cookie)).status,400);
+  assert.equal((await x.request('board','GET',undefined,tom.cookie)).body.me.name,'Tom');
+});
+test('open-board reminders run without cron while status only reports an actual scheduled run',async()=>{
+  const x=setup(),tom=await x.guest('Tom');
+  tom.state.cards.push({id:'due',title:'Due',column:tom.state.columns[0].id,comment:'',due:'',alert:1,timerAt:'2020-01-01T10:00'});
+  await x.request('board','PUT',{state:tom.state,version:tom.version},tom.cookie);
+  assert.equal((await x.request('board','GET',undefined,tom.cookie)).body.notifications.length,1);
+  assert.equal((await x.request('notification-status','GET',undefined,tom.cookie)).body.schedulerActive,false);
+  await tick(x.env,{scheduled:true});
+  assert.equal((await x.request('notification-status','GET',undefined,tom.cookie)).body.schedulerActive,true);
+  assert.equal((await x.request('board','GET',undefined,tom.cookie)).body.notifications.length,1);
+});
+test('push setup is authenticated, stable on repeated clicks, and never exports private keys',async()=>{
+  const x=setup(),tom=await x.guest('Tom');
+  assert.equal((await x.request('push-setup','POST',{})).status,401);
+  const first=(await x.request('push-setup','POST',{},tom.cookie)).body;
+  const second=(await x.request('push-setup','POST',{},tom.cookie)).body;
+  assert.equal(first.publicKey,second.publicKey);
+  const data=(await x.request('config')).body;
+  assert.equal(Buffer.from(data.publicKey,'base64url').length,65);
+  assert.ok(!JSON.stringify(data).includes('vapid_private'));
+  const rows=x.db.prepare("SELECT key,value FROM app_settings WHERE key LIKE 'vapid_%'").all();
+  const pub=JSON.parse(rows.find(r=>r.key==='vapid_private').value);
+  assert.equal(Buffer.from(first.publicKey,'base64url').subarray(1,33).toString('base64url'),pub.x);
+});

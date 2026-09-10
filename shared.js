@@ -4,7 +4,7 @@
   let seen = new Set();
   function showPushStatus(config) {
     const ready=!!config?.publicKey;
-    $('pushStatus').textContent=ready ? 'Achtergrondherinneringen: sleutels ingesteld' : 'Achtergrondherinneringen: nog niet ingesteld';
+    $('pushStatus').textContent=ready ? 'Meldingen: controleer achtergrondstatus' : 'Meldingen: nog niet ingesteld';
     $('backgroundSetup').hidden=ready;
   }
   async function api(path, options = {}) {
@@ -25,12 +25,14 @@
   }
   function cache() { localStorage.setItem(KEY, JSON.stringify(state)); }
   function displayNotes(notes, alertNew = true) {
+    const fresh=[];
     for (const note of notes) {
-      if (alertNew && !seen.has(note.id) && !note.read) toast(note.title + ': ' + note.text, note.card);
+      if (alertNew && !seen.has(note.id) && !note.read) { toast(note.title + ': ' + note.text, note.card); fresh.push(note); }
       seen.add(note.id);
     }
     state.notifications = notes;
     renderNotifications();
+    window.PlanboardNotifications?.deliver(fresh);
   }
   function apply(data, alertNew = false) {
     state = C.normalize(data.state);
@@ -62,10 +64,10 @@
     finally { busy = false; if (dirty && !blocked) flush(); }
   }
   async function poll() {
-    if (!enabled || busy || dirty || blocked || document.hidden || dragged) return;
+    if (!enabled || busy || dirty || blocked || dragged || resizing) return;
     try {
       const data = await api('board');
-      if (busy || dirty || blocked || dragged) return;
+      if (busy || dirty || blocked || dragged || resizing) return;
       if (document.querySelector('dialog[open]')) { displayNotes(data.notifications); return; }
       apply(data, true);
     } catch { $('saveStatus').textContent = 'Verbinding onderbroken · opnieuw proberen…'; }
@@ -76,10 +78,12 @@
       localStorage.setItem('planboard-before-shared', JSON.stringify(state));
       const data = await api('board');
       enabled = true; apply(data);
+      if(fields.color) await api('profile',{method:'PUT',body:JSON.stringify(fields)});
     } else {
       await api('profile', {method:'PUT',body:JSON.stringify(fields)});
       const data = await api('board');
       window.Teams.setPeople(data.me,data.members);
+      render();
     }
     toast('Gastprofiel verbonden met het gedeelde bord.');
   }
@@ -96,11 +100,16 @@
       await navigator.serviceWorker.ready;
       const raw = atob(config.publicKey.replace(/-/g,'+').replace(/_/g,'/'));
       const key = Uint8Array.from(raw, c => c.charCodeAt(0));
-      const subscription = await registration.pushManager.getSubscription() ||
-        await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+      let subscription = await registration.pushManager.getSubscription();
+      const oldKey=subscription?.options.applicationServerKey;
+      if (subscription && oldKey && (oldKey.byteLength!==key.length || new Uint8Array(oldKey).some((v,i)=>v!==key[i]))) {
+        await subscription.unsubscribe();subscription=null;
+      }
+      subscription ||= await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
       await api('subscription', {method:'POST',body:JSON.stringify(subscription.toJSON())});
       $('desktopNotifications').textContent='Meldingen staan aan op dit apparaat';
       toast('Achtergrondmeldingen ingeschakeld voor jouw profiel.');
+      await refreshPushStatus();
     } catch (error) { toast(error.message); }
   }
   window.Shared = {
@@ -113,12 +122,38 @@
       $('saveStatus').textContent = 'Delen…';
     }
   };
+  async function refreshPushStatus() {
+    if(!enabled) { $('deviceStatus').textContent='Verbind eerst je gastprofiel.'; return; }
+    try {
+      const supported='Notification' in window && 'PushManager' in window && 'serviceWorker' in navigator;
+      const registration=supported?await navigator.serviceWorker.getRegistration('/'):null;
+      const sub=await registration?.pushManager.getSubscription();
+      const status=await api('notification-status'+(sub?'?endpoint='+encodeURIComponent(sub.endpoint):''));
+      const active=supported&&Notification.permission==='granted'&&status.registered;
+      $('desktopNotifications').textContent=active?'Meldingen aan op dit apparaat':'Meldingen inschakelen';
+      $('deviceStatus').textContent=!supported?'Deze browser ondersteunt geen systeemmeldingen. Open het bord in Edge, Chrome of Firefox.':Notification.permission==='denied'?'Meldingen geblokkeerd: sta ze toe via de site-instellingen van je browser.':active?'Meldingen aan op dit apparaat.':'Meldingen op dit apparaat staan nog niet aan.';
+      if(status.deliveryProblems) $('deviceStatus').textContent+=' De pushdienst heeft '+status.deliveryProblems+' melding(en) nog niet kunnen bezorgen. Bekijk je inbox; controleer de verbinding en schrijf dit apparaat zo nodig opnieuw in.';
+      $('schedulerStatus').textContent=!status.publicKey?'Het bord is nog niet ingericht voor pushmeldingen.':status.schedulerActive?'Achtergrondherinneringen actief. Laatste controle: '+new Date(status.schedulerAt).toLocaleTimeString('nl-NL')+'.':status.schedulerAt?'Achtergrondcontrole is onderbroken. Laatste controle: '+new Date(status.schedulerAt).toLocaleString('nl-NL')+'.':'Achtergrondcontrole nog niet actief. Zolang het bord open is worden herinneringen hier wel gecontroleerd.';
+      $('pushStatus').textContent=!status.publicKey?'Meldingen: nog niet ingesteld':status.schedulerActive?'Achtergrondherinneringen actief':'Achtergrondcontrole niet actief';
+    } catch(error) { $('schedulerStatus').textContent='Status niet beschikbaar: '+error.message; }
+  }
+  $('notificationSettings').onclick=()=>{show('pushDialog');refreshPushStatus();};
+  $('refreshPushStatus').onclick=refreshPushStatus;
+  $('enablePushHere').onclick=enablePush;
+  $('backupBoard').onclick=async()=>{
+    try {
+      const data=enabled?await api('backup'):{format:'planboard-backup',exportedAt:new Date().toISOString(),state};
+      const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+      link.download='planboard-reservekopie-'+new Date().toISOString().slice(0,10)+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+    } catch(error){toast(error.message);}
+  };
   $('backgroundSetup').onclick = async () => {
     if (!enabled) return toast('Verbind eerst je gastprofiel.');
     try {
       const config=await api('push-setup',{method:'POST',body:'{}'});
       showPushStatus(config);
-      toast('Achtergrondherinneringen zijn ingesteld. Iedere gebruiker kan nu meldingen op zijn eigen apparaat inschakelen.');
+      toast('Pushmeldingen zijn ingericht. Controleer nu de achtergrondtaak via Meldingsinstellingen.');
+      await refreshPushStatus();
     } catch(error) { toast(error.message); }
   };
   $('retrySync').onclick = () => { blocked = false; $('syncConflict').close(); flush(); };
@@ -197,6 +232,8 @@
         window.Teams.setPeople(data.me,data.members); dirty=true;
         fail({status:409}); render();
       } else apply(data);
+      if('serviceWorker' in navigator && 'Notification' in window && Notification.permission==='granted') navigator.serviceWorker.register('/sw.js').catch(()=>{});
+      refreshPushStatus();
       const cardId = new URL(location.href).searchParams.get('card');
       if (cardId) openCard(cardId);
     } catch(error) {
@@ -205,4 +242,5 @@
   }
   init();
   setInterval(poll,5000);
+  setInterval(()=>{if(enabled&&!document.hidden)refreshPushStatus();},60000);
 })();

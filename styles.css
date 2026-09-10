@@ -25,7 +25,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .column{width:218px;min-width:218px;background:#f0efee;display:flex;flex-direction:column;border:1px solid #e9e8e7;position:relative}
 .column-head{display:flex;align-items:center;padding:8px 6px 7px 10px;min-height:40px;gap:2px}
 .column-options{flex:1;min-width:0;display:flex;align-items:center;gap:5px;background:none;border:0;text-align:left;padding:4px 0;font-size:12px}
-.column-name{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-weight:600}.count{font-size:11px;white-space:nowrap}.dots{color:#888;margin-left:auto;padding-left:5px}
+.column-name{white-space:normal;overflow-wrap:anywhere;font-weight:600;line-height:1.4}.count{font-size:11px;white-space:nowrap}.dots{color:#888;margin-left:auto;padding-left:5px}
+.column-resize{position:absolute;right:-3px;top:0;height:100%;width:7px;padding:0;border:0;border-radius:0;z-index:3;cursor:col-resize;background:transparent;touch-action:none}.column-resize:hover,.column-resize:focus-visible{background:#74277455}.card-people{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}.card-people:empty{display:none}.person-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;line-height:1.5;font-weight:400;overflow-wrap:anywhere}.person-chip::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--person-color);flex:none}.assignment-picker{margin:16px 0;border:1px solid #deddda;padding:10px}.assignment-picker summary{cursor:pointer;font-weight:600}.assignment-picker .recipient-list{margin-top:12px}.mine-filter{margin:5px;align-items:center}#guestColor{max-width:100px;height:38px;padding:3px}
 .add-card{border:0;background:transparent;color:#742774;font-size:18px;padding:0 6px}
 .column-reminder{font-size:10px;color:#796679;padding:0 10px 8px}
 .cards{overflow-y:auto;flex:1;padding:0 7px 7px;min-height:110px}

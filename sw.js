@@ -22,6 +22,36 @@ async function remember(db,id) {
     tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
   });
 }
+// The same reminder can arrive via an open tab and push at once. Claim it in
+// a single read/write transaction, shared by every tab on this device.
+async function claim(db,id) {
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('shown','readwrite'),store=tx.objectStore('shown');
+    let fresh=false;const get=store.get(id);
+    get.onsuccess=()=>{if(!get.result){fresh=true;store.put(true,id);}};
+    tx.oncomplete=()=>resolve(fresh);tx.onerror=()=>reject(tx.error);
+  });
+}
+async function showNotes(notes) {
+  const db=await ledger();let shown=0;
+  try {
+    for(const note of notes.slice(0,100)) {
+      if(!note.id||!note.title||!await claim(db,note.id)) continue;
+      try {
+        await self.registration.showNotification(note.title,{body:note.text,tag:note.id,silent:false,requireInteraction:false,data:{card:note.card}});
+        shown++;
+      } catch(error) {
+        const tx=db.transaction('shown','readwrite');tx.objectStore('shown').delete(note.id);
+        throw error;
+      }
+    }
+  } finally {db.close();}
+  return shown;
+}
+self.addEventListener('message',event=>{
+  if(event.data?.type==='show-reminders'&&event.source?.url&&new URL(event.source.url).origin===self.location.origin)
+    event.waitUntil(showNotes(event.data.notes||[]));
+});
 self.addEventListener('push',event=>{
   event.waitUntil((async()=>{
     try {
@@ -29,25 +59,8 @@ self.addEventListener('push',event=>{
       if(!response.ok) throw new Error('Session unavailable');
       const {notifications}=await response.json();
       const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true});
-      const db=await ledger();
-      const latest=[];
-      for(const note of notifications) if(!await wasShown(db,note.id)) latest.push(note);
-      if(!latest.length) {
-        await self.registration.showNotification('Planboard',{body:'Je meldingen zijn bijgewerkt.',tag:'planboard-update',data:{}});
-        db.close();
-        return;
-      }
-      for(const n of latest) {
-        await self.registration.showNotification(n.title,{body:n.text,tag:n.id,renotify:false,requireInteraction:false,data:{card:n.card}});
-        await remember(db,n.id);
-      }
-      // Best effort only: browsers may terminate a service worker before a timer.
-      setTimeout(async()=>{
-        const shown=await self.registration.getNotifications();
-        shown.filter(n=>latest.some(x=>x.id===n.tag)).forEach(n=>n.close());
-      },5000);
+      await showNotes(notifications);
       windows.forEach(client=>client.postMessage({refresh:true}));
-      db.close();
     } catch {
       await self.registration.showNotification('Planboard',{body:'Er is een nieuwe herinnering. Open het bord om je meldingen te bekijken.',tag:'planboard-open'});
     }
