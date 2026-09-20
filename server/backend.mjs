@@ -52,6 +52,17 @@ async function auth(req,env) {
   if (!m) throw error('Je gastprofiel is verlopen. Verbind opnieuw.',401);
   return m;
 }
+async function adminTable(env) {
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS admin_sessions (token_hash TEXT PRIMARY KEY,member TEXT NOT NULL,expires INTEGER NOT NULL)').run();
+}
+async function adminAuth(req,env,m) {
+  if (!env.ADMIN_CODE) throw error('De beheerder moet eerst een adminwachtwoord instellen.',503);
+  await adminTable(env);
+  const value=(req.headers.get('Cookie')||'').match(/(?:^|;\s*)pb_admin=([a-f0-9]{64})(?:;|$)/)?.[1];
+  if (!value) throw error('Voer eerst het adminwachtwoord in.',403);
+  const session=await env.DB.prepare('SELECT token_hash FROM admin_sessions WHERE token_hash=? AND member=? AND expires>?').bind(await hash(value),m.id,Date.now()).first();
+  if (!session) throw error('Adminrechten zijn verlopen. Voer het adminwachtwoord opnieuw in.',403);
+}
 async function body(req) {
   if (!req.headers.get('Content-Type')?.includes('application/json')) throw error('JSON verwacht.',415);
   const raw = await req.text();
@@ -63,6 +74,9 @@ const cleanName = (s,max=200) => {
   return s.trim();
 };
 function validBoard(input,old,members) {
+  // Keep newer column ownership when an older still-open tab sends a document
+  // that predates team-specific columns.
+  const submittedTeams = new Map((input?.columns || []).map(col=>[String(col.id),col.teamId]));
   const s = C.normalize(input);
   if (s.cards.length>1500 || s.columns.length>80 || s.teams.length>100) throw error('Te veel projecten, kolommen of teams.');
   const unique = list => new Set(list.map(x=>x.id)).size === list.length;
@@ -74,8 +88,13 @@ function validBoard(input,old,members) {
     if (!Array.isArray(a) || !a.length || a.length>200 || a.some(x=>!recipientSet.has(x))) throw error('Ongeldige ontvangers.');
     return [...new Set(a)];
   };
-  s.columns = s.columns.map(col=>({id:String(col.id),name:cleanName(col.name,100),width:C.width(col.width ?? old.columns.find(x=>x.id===col.id)?.width),
-    reminder:col.reminder==='' ? '' : Number(col.reminder || 0), recipients:recipients(col.recipients)}));
+  s.columns = s.columns.map(col=>{
+    const previous=old.columns.find(x=>x.id===col.id);
+    const teamId=String(submittedTeams.get(String(col.id)) ?? previous?.teamId ?? 'everyone');
+    if (!s.teams.some(t=>t.id===teamId)) throw error('Kolomteam bestaat niet.');
+    return {id:String(col.id),name:cleanName(col.name,100),teamId,width:C.width(col.width ?? previous?.width),
+      reminder:col.reminder==='' ? '' : Number(col.reminder || 0), recipients:recipients(col.recipients)};
+  });
   if (s.columns.some(c=>c.reminder!==''&&(!Number.isInteger(c.reminder)||c.reminder<0||c.reminder>3650))) throw error('Ongeldige kolomduur.');
   for (const [key,value] of Object.entries(s.labels)) if (!['title','comment','date','lead'].includes(key) || typeof value !== 'string' || value.length>60) throw error('Ongeldige veldnamen.');
   s.cards = s.cards.map(c => {
@@ -99,7 +118,15 @@ function validBoard(input,old,members) {
     if (prev?.column===card.column) card.columnSentKey=prev.columnSentKey;
     return card;
   });
-  return {version:3,labels:s.labels,teams:s.teams,columns:s.columns,cards:s.cards,notifications:[]};
+  const rawArchive=Array.isArray(input?.archive)?input.archive:(Array.isArray(old.archive)?old.archive:[]);
+  if (rawArchive.length>5000) throw error('Te veel archiefprojecten.');
+  const archive=rawArchive.map(item=>{
+    if (!item || typeof item!=='object' || !item.card || typeof item.card!=='object' || !Number.isFinite(Number(item.archivedAt))) throw error('Ongeldig archiefproject.');
+    const card=item.card;
+    if (typeof card.title!=='string' || card.title.length>200 || typeof card.comment!=='string' || card.comment.length>20000) throw error('Ongeldig archiefproject.');
+    return {id:String(item.id||crypto.randomUUID()),archivedAt:Number(item.archivedAt),teamName:cleanName(String(item.teamName||'Voormalig team'),100),columnName:cleanName(String(item.columnName||'Voormalige kolom'),100),card:{...card,id:String(card.id||crypto.randomUUID()),title:card.title.trim(),comment:card.comment,due:card.due||'',timerAt:card.timerAt||'',alert:Number(card.alert??1)}};
+  });
+  return {version:4,labels:s.labels,teams:s.teams,columns:s.columns,cards:s.cards,notifications:[],archive};
 }
 async function inbox(env,id,unread=false) {
   const rows = await env.DB.prepare('SELECT n.data,d.seen FROM notices n JOIN deliveries d ON n.id=d.notice WHERE d.member=?'+
@@ -115,12 +142,12 @@ export async function api(request,env,ctx={waitUntil(){}}) {
   try {
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api\//,'');
-    if (!['GET','POST','PUT'].includes(request.method)) throw error('Niet toegestaan.',405);
+    if (!['GET','POST','PUT','DELETE'].includes(request.method)) throw error('Niet toegestaan.',405);
     if (request.method !== 'GET') {
       const origin=request.headers.get('Origin');
       if (origin!==url.origin) throw error('Ongeldige herkomst.',403);
     }
-    if (path==='config'&&request.method==='GET') { const push=await pushSettings(env); return json({ready:!!(env.DB&&env.WORKSPACE_CODE),publicKey:push.VAPID_PUBLIC_KEY||null}); }
+    if (path==='config'&&request.method==='GET') { const push=await pushSettings(env); return json({ready:!!(env.DB&&env.WORKSPACE_CODE),publicKey:push.VAPID_PUBLIC_KEY||null,adminReady:!!env.ADMIN_CODE}); }
     if (!env.DB||!env.WORKSPACE_CODE) throw error('De beheerder moet de database en uitnodigingscode nog instellen.',503);
     if (path==='join'&&request.method==='POST') {
       const b = await body(request);
@@ -135,6 +162,44 @@ export async function api(request,env,ctx={waitUntil(){}}) {
       return json({ok:true},200,{'Set-Cookie':'pb_session='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000'});
     }
     const m = await auth(request,env);
+    if (path==='admin/login'&&request.method==='POST') {
+      if (!env.ADMIN_CODE) throw error('De beheerder moet eerst een adminwachtwoord instellen.',503);
+      const b=await body(request);
+      if (typeof b.code!=='string' || await hash(b.code)!==await hash(env.ADMIN_CODE)) throw error('Adminwachtwoord klopt niet.',403);
+      await adminTable(env);
+      const secret=token();
+      await env.DB.prepare('INSERT INTO admin_sessions(token_hash,member,expires) VALUES(?,?,?)').bind(await hash(secret),m.id,Date.now()+8*3600000).run();
+      return json({ok:true},200,{'Set-Cookie':'pb_admin='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800'});
+    }
+    if (path==='admin/members'&&request.method==='GET') {
+      await adminAuth(request,env,m);
+      return json({members:(await membersWithColors(env)).map(memberView)});
+    }
+    const deleteMember=path.match(/^admin\/members\/([a-f0-9-]{8,})$/);
+    if (deleteMember&&request.method==='DELETE') {
+      await adminAuth(request,env,m);
+      const id=deleteMember[1];
+      if (id===m.id) throw error('Je kunt je eigen account niet verwijderen.',400);
+      const target=await env.DB.prepare('SELECT id FROM members WHERE id=?').bind(id).first();
+      if (!target) throw error('Dit account bestaat al niet meer.',404);
+      const r=await row(env),s=C.normalize(JSON.parse(r.data));
+      for (const card of s.cards) {
+        card.assignees=(card.assignees||[]).filter(member=>member!==id);
+        card.dueRecipients=(card.dueRecipients||['team:everyone']).filter(value=>value!=='user:'+id);
+        card.timerRecipients=(card.timerRecipients||['team:everyone']).filter(value=>value!=='user:'+id);
+        if (!card.dueRecipients.length) card.dueRecipients=['team:everyone'];
+        if (!card.timerRecipients.length) card.timerRecipients=['team:everyone'];
+      }
+      await env.DB.batch([
+        env.DB.prepare('UPDATE board SET data=?,version=version+1,stamp=? WHERE id=1').bind(JSON.stringify(s),crypto.randomUUID()),
+        env.DB.prepare('DELETE FROM push_jobs WHERE endpoint IN (SELECT endpoint FROM subscriptions WHERE member=?)').bind(id),
+        env.DB.prepare('DELETE FROM subscriptions WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM deliveries WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM admin_sessions WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM members WHERE id=?').bind(id)
+      ]);
+      return json({ok:true});
+    }
     if (path==='push-setup'&&request.method==='POST') {
       const push=await createPushSettings(env,new URL(request.url).origin);
       return json({ok:true,publicKey:push.VAPID_PUBLIC_KEY});

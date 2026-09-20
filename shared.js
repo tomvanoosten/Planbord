@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  let enabled = false, available = false, version = 0, busy = false, dirty = false, blocked = false, debounce;
+  let enabled = false, available = false, adminReady = false, version = 0, busy = false, dirty = false, blocked = false, debounce;
   let seen = new Set();
   function showPushStatus(config) {
     const ready=!!config?.publicKey;
@@ -113,7 +113,10 @@
     } catch (error) { toast(error.message); }
   }
   window.Shared = {
-    get enabled(){return enabled;}, get available(){return available;}, profile, enablePush,
+    get enabled(){return enabled;}, get available(){return available;}, get adminReady(){return adminReady;}, profile, enablePush,
+    async adminLogin(code) { return api('admin/login',{method:'POST',body:JSON.stringify({code})}); },
+    async members() { return api('admin/members'); },
+    async deleteMember(id) { return api('admin/members/'+encodeURIComponent(id),{method:'DELETE'}); },
     save() {
       if (!enabled) return;
       dirty = true;
@@ -221,7 +224,7 @@
   async function init() {
     if (!location.protocol.startsWith('http')) return;
     try {
-      const config = await api('config'); available = config.ready; showPushStatus(config);
+      const config = await api('config'); available = config.ready; adminReady=!!config.adminReady; showPushStatus(config);
       if (!available) return;
       const data = await api('board');
       // Keep a recoverable draft after refresh, including a network failure.

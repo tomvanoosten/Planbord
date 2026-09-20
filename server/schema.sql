@@ -41,5 +41,11 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash TEXT PRIMARY KEY,
+  member TEXT NOT NULL,
+  expires INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS delivery_member ON deliveries(member,seen);
 CREATE INDEX IF NOT EXISTS subscription_member ON subscriptions(member);
+CREATE INDEX IF NOT EXISTS admin_session_member ON admin_sessions(member,expires);

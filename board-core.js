@@ -8,7 +8,7 @@
   const color = (value, id = '') => /^#[0-9a-f]{6}$/i.test(value || '') ? value : ['#548c68','#627bb5','#aa7199','#b68543','#58969c','#8975ad'][Array.from(id).reduce((n,c)=>n+c.charCodeAt(0),0)%6];
   function seed(now = Date.now()) {
     const names = ['Nieuwe projecten', 'Qfield order maken', 'VWO maken', 'VWO ligt bij controle', 'VWO ligt in de bak', 'Veldwerkformulieren', 'Veldwerk gepland', 'Rapportage afmaken', 'Rapportage bij controle', 'Rapportage verstuurd'];
-    return {version: 2, labels: {...labels}, columns: names.map((name, i) => ({id: 'stage-' + i, name, reminder: ''})), cards: [
+    return {version: 4, labels: {...labels}, columns: names.map((name, i) => ({id: 'stage-' + i, name, teamId: 'everyone', reminder: ''})), cards: [
       {id: uid(), title: '225063, AP04 Enschede', column: 'stage-0', comment: '', enteredAt: now, due: '', alert: 1},
       {id: uid(), title: '225845, Nijverdal', column: 'stage-3', comment: '', enteredAt: now, due: '', alert: 1},
       {id: uid(), title: '225774, Utrecht', column: 'stage-7', comment: '', enteredAt: now, due: '', alert: 1}
@@ -16,10 +16,10 @@
   }
   function normalize(data, now = Date.now()) {
     if (!data || !Array.isArray(data.columns) || !data.columns.length || !Array.isArray(data.cards)) throw new Error('Ongeldige bordgegevens');
-    return {...data, version: 3, teams: [{id:'everyone',name:'Iedereen'}, ...(data.teams || []).filter(t => t.id !== 'everyone')], labels: {...labels, ...(data.fieldLabel ? {date: data.fieldLabel} : {}), ...data.labels},
-      columns: data.columns.map(c => ({...c, id: String(c.id)})),
-      cards: data.cards.map(c => ({...c, id: String(c.id), column: String(c.column), enteredAt: c.enteredAt || c.created || now, alert: c.alert ?? 1, due: c.due || '', timerAt: c.timerAt || '', comment: c.comment || ''})),
-      notifications: Array.isArray(data.notifications) ? data.notifications : []};
+    return {...data, version: 4, teams: [{id:'everyone',name:'Iedereen'}, ...(data.teams || []).filter(t => t.id !== 'everyone')], labels: {...labels, ...(data.fieldLabel ? {date: data.fieldLabel} : {}), ...data.labels},
+      columns: data.columns.map(c => ({...c, id: String(c.id), teamId: String(c.teamId || 'everyone')})),
+      cards: data.cards.map(c => ({...c, id: String(c.id), column: String(c.column), teamId: String(c.teamId || 'everyone'), enteredAt: c.enteredAt || c.created || now, alert: c.alert ?? 1, due: c.due || '', timerAt: c.timerAt || '', comment: c.comment || ''})),
+      notifications: Array.isArray(data.notifications) ? data.notifications : [], archive: Array.isArray(data.archive) ? data.archive : []};
   }
   function move(card, column, now = Date.now()) {
     if (card.column === column) return;

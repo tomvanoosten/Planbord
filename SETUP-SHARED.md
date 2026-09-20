@@ -35,6 +35,7 @@ In de Pages-instellingen onder **Variables and Secrets**:
 | Naam | Waarde | Type |
 | --- | --- | --- |
 | WORKSPACE_CODE | De gegenereerde uitnodigingscode | Secret |
+| ADMIN_CODE | Een apart, sterk adminwachtwoord voor accounts beheren | Secret |
 | VAPID_PUBLIC_KEY | De gegenereerde publieke sleutel | Text |
 | VAPID_PRIVATE_JWK | Het volledige JSON-object, inclusief accolades | Secret |
 | PUSH_SUBJECT | https://planbord-285.pages.dev | Text |

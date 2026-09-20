@@ -129,6 +129,51 @@ test('update preserves all existing project data, clocks, widths and assignments
   assert.deepEqual(backup.state,after.state);
   assert.ok(!JSON.stringify(backup).includes('token_hash'));
 });
+test('team-specific columns survive an older client that does not send the team marker',async()=>{
+  const x=setup(),tom=await x.guest('Tom');
+  const s=tom.state;
+  s.teams.push({id:'field',name:'Veldwerk'});
+  s.columns.push({id:'field-stage',name:'Ter plaatse',teamId:'field',reminder:''});
+  s.cards.push({id:'field-card',title:'Teamproject',comment:'',column:'field-stage',teamId:'field',due:'',alert:1,timerAt:''});
+  assert.equal((await x.request('board','PUT',{state:s,version:tom.version},tom.cookie)).status,200);
+  const before=(await x.request('board','GET',undefined,tom.cookie)).body;
+  const oldClient=structuredClone(before.state);
+  oldClient.columns.forEach(column=>delete column.teamId);
+  assert.equal((await x.request('board','PUT',{state:oldClient,version:before.version},tom.cookie)).status,200);
+  const after=(await x.request('board','GET',undefined,tom.cookie)).body.state;
+  assert.equal(after.columns.find(column=>column.id==='field-stage').teamId,'field');
+  assert.equal(after.cards.find(card=>card.id==='field-card').column,'field-stage');
+});
+test('archived team projects are retained in shared storage and do not reappear on the active board',async()=>{
+  const x=setup(),tom=await x.guest('Tom');
+  const s=tom.state;
+  s.archive=[{id:'archive-1',archivedAt:Date.now(),teamName:'Voormalig team',columnName:'Afgerond',card:{id:'old-project',title:'Bewaren',comment:'Oude opmerking',due:'2026-10-01',timerAt:'',alert:1}}];
+  assert.equal((await x.request('board','PUT',{state:s,version:tom.version},tom.cookie)).status,200);
+  const after=(await x.request('board','GET',undefined,tom.cookie)).body.state;
+  assert.equal(after.cards.some(card=>card.id==='old-project'),false);
+  assert.equal(after.archive[0].card.title,'Bewaren');
+  assert.equal(after.archive[0].columnName,'Afgerond');
+});
+test('admin password grants a short-lived separate session and can safely remove another account',async()=>{
+  const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia');
+  x.env.ADMIN_CODE='admin-test-password';
+  assert.equal((await x.request('admin/members','GET',undefined,tom.cookie)).status,403);
+  assert.equal((await x.request('admin/login','POST',{code:'wrong'},tom.cookie)).status,403);
+  const login=await x.request('admin/login','POST',{code:'admin-test-password'},tom.cookie);
+  assert.equal(login.status,200);
+  const adminCookie=tom.cookie+'; '+login.cookie;
+  const list=await x.request('admin/members','GET',undefined,adminCookie);
+  assert.equal(list.status,200); assert.equal(list.body.members.length,2);
+  assert.equal((await x.request('admin/members/'+tom.me.id,'DELETE',undefined,adminCookie)).status,400);
+  const board=(await x.request('board','GET',undefined,tom.cookie)).body;
+  board.state.cards.push({id:'owned',title:'Blijft bestaan',comment:'',column:board.state.columns[0].id,due:'',alert:1,timerAt:'',assignees:[mia.me.id],dueRecipients:['user:'+mia.me.id],timerRecipients:['user:'+mia.me.id]});
+  assert.equal((await x.request('board','PUT',{state:board.state,version:board.version},tom.cookie)).status,200);
+  assert.equal((await x.request('admin/members/'+mia.me.id,'DELETE',undefined,adminCookie)).status,200);
+  assert.equal((await x.request('board','GET',undefined,mia.cookie)).status,401);
+  const after=(await x.request('board','GET',undefined,tom.cookie)).body;
+  assert.equal(after.members.some(member=>member.id===mia.me.id),false);
+  assert.deepEqual(after.state.cards.find(card=>card.id==='owned').assignees,[]);
+});
 test('personal colors are shared and invalid profile changes do not partially save',async()=>{
   const x=setup(),tom=await x.guest('Tom'),other=await x.guest('Other');
   assert.equal((await x.request('profile','PUT',{name:'Tom',teams:[],color:'#459056'},tom.cookie)).status,200);
