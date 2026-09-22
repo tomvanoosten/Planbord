@@ -6,6 +6,9 @@ const KEY = 'planboard-state';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, activeCard, activeColumn, insertIndex, pendingDelete, confirmUnlockTimer, search = '', storageOK = true;
 let todoDraftTimer;
+const ACTIONS_KEY='planboard-actions';
+let actionItems=[];
+try { actionItems=JSON.parse(localStorage.getItem(ACTIONS_KEY))||[]; } catch {}
 try {
   const raw = localStorage.getItem(KEY);
   state = raw ? C.normalize(JSON.parse(raw)) : C.seed();
@@ -64,6 +67,7 @@ function render() {
   window.Teams?.refresh();
   renderTodoLists();
   renderArchive();
+  renderActions();
 }
 function allCardsForActiveTeam() { return state.cards.filter(card => !window.Teams || window.Teams.matches(card)); }
 function isOverdue(card) { return !!card.due && new Date(card.due + 'T23:59:59').getTime() < Date.now(); }
@@ -349,6 +353,27 @@ function renderArchive() {
     return '<section class="archive-month"><h3>'+esc(month.name)+'</h3><span class="archive-count">('+items.length+')</span><div class="archive-items">'+(items.length?items.map(item=>'<article class="archive-card"><strong>'+esc(item.card.title)+'</strong><small>Team: '+esc(item.teamName)+' · Kolom: '+esc(item.columnName)+'</small>'+(item.card.due?'<small>▦ Deadline: '+esc(item.card.due.split('-').reverse().join('-'))+'</small>':'')+(item.card.timerAt?'<small>◷ Persoonlijke herinnering</small>':'')+(item.card.comment?'<p>'+esc(item.card.comment)+'</p>':'<p class="archive-empty-note">Geen opmerking.</p>')+'<time>Gearchiveerd '+esc(new Date(item.archivedAt).toLocaleDateString('nl-NL'))+'</time></article>').join(''):'<p class="archive-empty-note">Geen projecten.</p>')+'</div></section>';
   }).join('');
 }
+function normalizeActions(items) {
+  return Array.isArray(items) ? items.slice(0,250).map(item=>({id:String(item.id||C.uid()),text:String(item.text||'').slice(0,4000),done:!!item.done})) : [];
+}
+function saveActions() {
+  actionItems=normalizeActions(actionItems);
+  localStorage.setItem(ACTIONS_KEY,JSON.stringify(actionItems));
+  window.Shared?.saveActions?.(actionItems);
+}
+function renderActions() {
+  if (!$('actionRows')) return;
+  $('actionsOwner').textContent=window.Teams?.me?.()?.name ? 'Persoonlijke actielijst van '+window.Teams.me().name+'.' : 'Jouw persoonlijke klad- en actielijst.';
+  $('actionRows').innerHTML=actionItems.length?actionItems.map(item=>'<div class="actions-row" data-action="'+esc(item.id)+'"><textarea data-action-text="'+esc(item.id)+'" aria-label="Actie">'+esc(item.text)+'</textarea><label class="action-check"><input type="checkbox" data-action-done="'+esc(item.id)+'"'+(item.done?' checked':'')+'><span>Gedaan</span></label></div>').join(''):'<div class="actions-row actions-empty"><textarea data-action-text="new" aria-label="Nieuwe actie" placeholder="Typ hier je eerste actie of klad…"></textarea><label class="action-check"><input type="checkbox" disabled><span>Gedaan</span></label></div>';
+  $('actionRows').querySelectorAll?.('[data-action-text]').forEach(autoSizeAction);
+}
+function autoSizeAction(input) { if(!input?.style) return; input.style.height='0px'; input.style.height=Math.max(50,input.scrollHeight||50)+'px'; }
+function updateAction(id,fields) {
+  if (id==='new') { const text=String(fields.text||'').trim(); if(!text) return; actionItems.push({id:C.uid(),text,done:false}); }
+  else { const item=actionItems.find(entry=>entry.id===id); if(!item)return; Object.assign(item,fields); }
+  saveActions();
+}
+window.PlanboardActions={set(items){actionItems=normalizeActions(items);localStorage.setItem(ACTIONS_KEY,JSON.stringify(actionItems));renderActions();},get(){return normalizeActions(actionItems);}};
 function renderTodoLists() {
   if (!$('todoLists') || !window.Teams) return;
   const lists=todoPreferences();
@@ -379,13 +404,19 @@ $('todoLists').oninput=event=>{const input=event.target.closest('[data-todo-comm
 $('todoLists').onchange=event=>{const input=event.target.closest('[data-todo-comment]');if(!input)return;const card=state.cards.find(c=>c.id===input.dataset.todoComment);if(card){card.comment=input.value;save();$('saveStatus').textContent='Opmerking gedeeld';}};
 function setView(view) {
   activeView=view;
-  $('board').hidden=view!=='board'; $('todoOverview').hidden=view!=='todo'; $('archiveOverview').hidden=view!=='archive';
+  $('board').hidden=view!=='board'; $('todoOverview').hidden=view!=='todo'; $('archiveOverview').hidden=view!=='archive'; $('actionsOverview').hidden=view!=='actions';
   $('todoViewButton').textContent=view==='board'?'☷ To do-overzicht':'▦ Terug naar projectstatus';
   $('todoViewButton').setAttribute('aria-pressed',String(view==='todo'));
   $('archiveViewButton').setAttribute('aria-pressed',String(view==='archive'));
+  $('actionsViewButton').setAttribute('aria-pressed',String(view==='actions'));
 }
 $('todoViewButton').onclick=()=>setView(activeView==='board'?'todo':'board');
 $('archiveViewButton').onclick=()=>setView(activeView==='archive'?'board':'archive');
+$('actionsViewButton').onclick=()=>setView(activeView==='actions'?'board':'actions');
+$('newAction').onclick=()=>{actionItems.push({id:C.uid(),text:'',done:false});saveActions();renderActions();$('actionRows').querySelector?.('textarea')?.focus();};
+$('actionRows').oninput=event=>{const input=event.target.closest('[data-action-text]');if(!input)return;autoSizeAction(input);if(input.dataset.actionText==='new')return;updateAction(input.dataset.actionText,{text:input.value});};
+$('actionRows').onchange=event=>{const text=event.target.closest('[data-action-text]');if(text&&text.dataset.actionText==='new')return updateAction('new',{text:text.value});const input=event.target.closest('[data-action-done]');if(!input)return;updateAction(input.dataset.actionDone,{done:input.checked});};
+$('printActions').onclick=()=>window.print();
 $('search').oninput = () => { search = $('search').value.trim().toLocaleLowerCase(); render(); };
 $('settingsButton').onclick = () => {
   for (const key of ['Title', 'Comment', 'Date', 'Lead']) $('setting' + key).value = state.labels[key.toLowerCase()];

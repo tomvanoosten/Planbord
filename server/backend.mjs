@@ -48,20 +48,28 @@ async function row(env) {
 async function auth(req,env) {
   const value = (req.headers.get('Cookie') || '').match(/(?:^|;\s*)pb_session=([a-f0-9]{64})(?:;|$)/)?.[1];
   if (!value) throw error('Verbind eerst je gastprofiel.',401);
-  const m = await env.DB.prepare('SELECT * FROM members WHERE token_hash=? AND expires>?').bind(await hash(value),Date.now()).first();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS member_sessions (token_hash TEXT PRIMARY KEY,member TEXT NOT NULL,expires INTEGER NOT NULL)').run();
+  const tokenHash=await hash(value);
+  const m = await env.DB.prepare('SELECT m.* FROM member_sessions s JOIN members m ON m.id=s.member WHERE s.token_hash=? AND s.expires>?').bind(tokenHash,Date.now()).first()
+    || await env.DB.prepare('SELECT * FROM members WHERE token_hash=? AND expires>?').bind(tokenHash,Date.now()).first();
   if (!m) throw error('Je gastprofiel is verlopen. Verbind opnieuw.',401);
   return m;
 }
 async function adminTable(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS admin_sessions (token_hash TEXT PRIMARY KEY,member TEXT NOT NULL,expires INTEGER NOT NULL)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS admin_members (member TEXT PRIMARY KEY)').run();
+}
+async function accountTables(env) {
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS credentials (login TEXT PRIMARY KEY,member TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS member_sessions (token_hash TEXT PRIMARY KEY,member TEXT NOT NULL,expires INTEGER NOT NULL)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS action_lists (member TEXT PRIMARY KEY,data TEXT NOT NULL,updated INTEGER NOT NULL)').run();
+  await adminTable(env);
 }
 async function adminAuth(req,env,m) {
   if (!env.ADMIN_CODE) throw error('De beheerder moet eerst een adminwachtwoord instellen.',503);
-  await adminTable(env);
-  const value=(req.headers.get('Cookie')||'').match(/(?:^|;\s*)pb_admin=([a-f0-9]{64})(?:;|$)/)?.[1];
-  if (!value) throw error('Voer eerst het adminwachtwoord in.',403);
-  const session=await env.DB.prepare('SELECT token_hash FROM admin_sessions WHERE token_hash=? AND member=? AND expires>?').bind(await hash(value),m.id,Date.now()).first();
-  if (!session) throw error('Adminrechten zijn verlopen. Voer het adminwachtwoord opnieuw in.',403);
+  await accountTables(env);
+  const admin=await env.DB.prepare('SELECT member FROM admin_members WHERE member=?').bind(m.id).first();
+  if (!admin) throw error('Voer eerst het adminwachtwoord in.',403);
 }
 async function body(req) {
   if (!req.headers.get('Content-Type')?.includes('application/json')) throw error('JSON verwacht.',415);
@@ -72,6 +80,15 @@ async function body(req) {
 const cleanName = (s,max=200) => {
   if (typeof s !== 'string' || !s.trim() || s.length > max) throw error('Ongeldige naam.');
   return s.trim();
+};
+const cleanLogin = value => {
+  const login=String(value||'').trim().toLowerCase();
+  if(!/^[a-z0-9][a-z0-9._-]{2,59}$/.test(login)) throw error('Gebruik 3-60 letters, cijfers, punt, streepje of laag streepje als gebruikersnaam.');
+  return login;
+};
+const cleanPassword = value => {
+  if(typeof value!=='string'||value.length<10||value.length>200) throw error('Kies een wachtwoord van minstens 10 tekens.');
+  return value;
 };
 function validBoard(input,old,members) {
   // Keep newer column ownership when an older still-open tab sends a document
@@ -149,6 +166,33 @@ export async function api(request,env,ctx={waitUntil(){}}) {
     }
     if (path==='config'&&request.method==='GET') { const push=await pushSettings(env); return json({ready:!!(env.DB&&env.WORKSPACE_CODE),publicKey:push.VAPID_PUBLIC_KEY||null,adminReady:!!env.ADMIN_CODE}); }
     if (!env.DB||!env.WORKSPACE_CODE) throw error('De beheerder moet de database en uitnodigingscode nog instellen.',503);
+    if (path==='register'&&request.method==='POST') {
+      const b=await body(request),login=cleanLogin(b.login),password=cleanPassword(b.password);
+      const limitKey=await hash((request.headers.get('CF-Connecting-IP')||'local')+Math.floor(Date.now()/3600000));
+      await env.DB.prepare('INSERT INTO join_limits(key,count) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET count=count+1').bind(limitKey).run();
+      const count=await env.DB.prepare('SELECT count FROM join_limits WHERE key=?').bind(limitKey).first();
+      if (count.count>20) throw error('Te veel pogingen. Probeer het later opnieuw.',429);
+      if (typeof b.code!=='string' || await hash(b.code)!==await hash(env.WORKSPACE_CODE)) throw error('Uitnodigingscode klopt niet.',403);
+      await accountTables(env);
+      const name=cleanName(b.name,60),id=crypto.randomUUID(),secret=token();
+      try {
+        await env.DB.batch([
+          env.DB.prepare('INSERT INTO members(id,name,teams,token_hash,expires) VALUES(?,?,?,?,?)').bind(id,name,'[]',await hash(secret),Date.now()+365*86400000),
+          env.DB.prepare('INSERT INTO member_sessions(token_hash,member,expires) VALUES(?,?,?)').bind(await hash(secret),id,Date.now()+365*86400000),
+          env.DB.prepare('INSERT INTO credentials(login,member,password_hash) VALUES(?,?,?)').bind(login,id,await hash(password))
+        ]);
+      } catch(e) { if(String(e.message).toLowerCase().includes('unique')) throw error('Deze gebruikersnaam is al in gebruik.',409); throw e; }
+      return json({ok:true},200,{'Set-Cookie':'pb_session='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000'});
+    }
+    if (path==='login'&&request.method==='POST') {
+      const b=await body(request),login=cleanLogin(b.login),password=cleanPassword(b.password);
+      await accountTables(env);
+      const credential=await env.DB.prepare('SELECT c.member,c.password_hash,m.expires FROM credentials c JOIN members m ON m.id=c.member WHERE c.login=? AND m.expires>?').bind(login,Date.now()).first();
+      if(!credential || await hash(password)!==credential.password_hash) throw error('Gebruikersnaam of wachtwoord klopt niet.',403);
+      const secret=token();
+      await env.DB.prepare('INSERT INTO member_sessions(token_hash,member,expires) VALUES(?,?,?)').bind(await hash(secret),credential.member,Date.now()+365*86400000).run();
+      return json({ok:true},200,{'Set-Cookie':'pb_session='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000'});
+    }
     if (path==='join'&&request.method==='POST') {
       const b = await body(request);
       const limitKey=await hash((request.headers.get('CF-Connecting-IP')||'local')+Math.floor(Date.now()/3600000));
@@ -162,14 +206,34 @@ export async function api(request,env,ctx={waitUntil(){}}) {
       return json({ok:true},200,{'Set-Cookie':'pb_session='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000'});
     }
     const m = await auth(request,env);
+    if (path==='account'&&request.method==='PUT') {
+      const b=await body(request),login=cleanLogin(b.login),password=cleanPassword(b.password);
+      await accountTables(env);
+      const existing=await env.DB.prepare('SELECT member FROM credentials WHERE login=?').bind(login).first();
+      if(existing&&existing.member!==m.id) throw error('Deze gebruikersnaam is al in gebruik.',409);
+      await env.DB.prepare('INSERT INTO credentials(login,member,password_hash) VALUES(?,?,?) ON CONFLICT(member) DO UPDATE SET login=excluded.login,password_hash=excluded.password_hash').bind(login,m.id,await hash(password)).run();
+      return json({ok:true,login});
+    }
     if (path==='admin/login'&&request.method==='POST') {
       if (!env.ADMIN_CODE) throw error('De beheerder moet eerst een adminwachtwoord instellen.',503);
       const b=await body(request);
-      if (typeof b.code!=='string' || await hash(b.code)!==await hash(env.ADMIN_CODE)) throw error('Adminwachtwoord klopt niet.',403);
-      await adminTable(env);
-      const secret=token();
-      await env.DB.prepare('INSERT INTO admin_sessions(token_hash,member,expires) VALUES(?,?,?)').bind(await hash(secret),m.id,Date.now()+8*3600000).run();
-      return json({ok:true},200,{'Set-Cookie':'pb_admin='+secret+'; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800'});
+      await accountTables(env);
+      const existing=await env.DB.prepare('SELECT member FROM admin_members WHERE member=?').bind(m.id).first();
+      if (!existing && (typeof b.code!=='string' || await hash(b.code)!==await hash(env.ADMIN_CODE))) throw error('Adminwachtwoord klopt niet.',403);
+      if (!existing) await env.DB.prepare('INSERT INTO admin_members(member) VALUES(?)').bind(m.id).run();
+      return json({ok:true});
+    }
+    if (path==='actions'&&request.method==='GET') {
+      await accountTables(env); const list=await env.DB.prepare('SELECT data FROM action_lists WHERE member=?').bind(m.id).first();
+      return json({items:list?JSON.parse(list.data):[]});
+    }
+    if (path==='actions'&&request.method==='PUT') {
+      const b=await body(request);
+      if(!Array.isArray(b.items)||b.items.length>250||b.items.some(item=>!item||typeof item.text!=='string'||item.text.length>4000||typeof item.done!=='boolean')) throw error('Ongeldige actielijst.');
+      await accountTables(env);
+      const items=b.items.map(item=>({id:String(item.id||crypto.randomUUID()),text:item.text,done:item.done}));
+      await env.DB.prepare('INSERT INTO action_lists(member,data,updated) VALUES(?,?,?) ON CONFLICT(member) DO UPDATE SET data=excluded.data,updated=excluded.updated').bind(m.id,JSON.stringify(items),Date.now()).run();
+      return json({ok:true});
     }
     if (path==='admin/members'&&request.method==='GET') {
       await adminAuth(request,env,m);
@@ -196,6 +260,10 @@ export async function api(request,env,ctx={waitUntil(){}}) {
         env.DB.prepare('DELETE FROM subscriptions WHERE member=?').bind(id),
         env.DB.prepare('DELETE FROM deliveries WHERE member=?').bind(id),
         env.DB.prepare('DELETE FROM admin_sessions WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM admin_members WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM member_sessions WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM credentials WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM action_lists WHERE member=?').bind(id),
         env.DB.prepare('DELETE FROM members WHERE id=?').bind(id)
       ]);
       return json({ok:true});

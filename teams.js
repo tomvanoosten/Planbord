@@ -6,6 +6,7 @@
   let people = [];
   let filter = 'everyone';
   let onlyMine=false;
+  let profileMode='login';
   const assigned = card => (card.assignees||[]).map(id=>(people.length?people:[guest]).find(p=>p.id===id)||{id,name:'Voormalig lid'});
   const personChip = p => '<span class="person-chip" style="--person-color:'+C.color(p.color,p.id)+'" title="'+esc(p.name)+'">'+esc(p.name)+'</span>';
   state = C.normalize(state);
@@ -65,6 +66,15 @@
     $('myTeams').innerHTML = '<p>Mijn teams</p>' + state.teams.map(t =>
       '<label class="check-label"><input type="checkbox" value="' + esc(t.id) + '"' +
       (t.id === 'everyone' ? ' checked disabled' : (guest.teams || []).includes(t.id) ? ' checked' : '') + '> ' + esc(t.name) + '</label>').join('');
+  }
+  function setProfileMode(mode) {
+    profileMode=mode;
+    const login=mode==='login';
+    $('loginMode').setAttribute?.('aria-pressed',String(login)); $('registerMode').setAttribute?.('aria-pressed',String(!login));
+    $('workspaceCodeField').hidden=login;
+    $('profileDetails').hidden=login;
+    $('profileHeading').textContent=login?'Inloggen':'Nieuw account maken';
+    $('profileSubmit').textContent=login?'Inloggen':'Account maken';
   }
   function teamList() {
     $('teamList').innerHTML = state.teams.map(t => '<div class="team-edit"><input aria-label="Teamnaam" maxlength="60" data-team-name="' + esc(t.id) + '" value="' + esc(t.name) + '"' + (t.id === 'everyone' ? ' disabled' : '') + '>' +
@@ -153,16 +163,27 @@
       $('guestName').value = guest.name;
       $('guestColor').value = C.color(guest.color,guest.id);
       memberships();
-      $('workspaceCodeField').hidden = !!window.Shared?.enabled;
-      $('importLocal').hidden = !window.Shared?.enabled;
+      const connected=!!window.Shared?.enabled;
+      $('profileModeButtons').hidden=connected;
+      $('accountAccess').hidden=!window.Shared?.available&&!connected;
+      $('importLocal').hidden = !connected;
       $('adminButton').hidden = !window.Shared?.adminReady;
-      $('connectionStatus').textContent = window.Shared?.enabled ? 'Verbonden met het gedeelde bord.' : 'Lokaal profiel. Voor gedeeld gebruik moet de Cloudflare-database gekoppeld zijn.';
+      if (connected) {
+        $('workspaceCodeField').hidden=true; $('profileDetails').hidden=false;
+        $('profileHeading').textContent='Jouw profiel en account'; $('profileSubmit').textContent='Profiel opslaan';
+        $('connectionStatus').textContent='Verbonden met het gedeelde bord. Vul hieronder een gebruikersnaam en wachtwoord in om dit bestaande profiel op andere apparaten te gebruiken.';
+      } else if (window.Shared?.available) {
+        setProfileMode(profileMode);
+        $('connectionStatus').textContent='Log in met je gebruikersnaam of maak een nieuw account met de uitnodigingscode.';
+      } else $('connectionStatus').textContent='Lokaal profiel. Voor gedeeld gebruik moet de Cloudflare-database gekoppeld zijn.';
       show('profileDialog');
     }
   };
   $('teamFilter').onchange = () => { filter = $('teamFilter').value; if (ensureColumns(filter)) toast('Dit team heeft nu een eigen kopie van de kolommen als startpunt. Verdere wijzigingen blijven alleen bij dit team.'); render(); };
   $('onlyMine').onchange = () => { onlyMine=$('onlyMine').checked; render(); };
   $('profileButton').onclick = () => window.Teams.openProfile();
+  $('loginMode').onclick=()=>setProfileMode('login');
+  $('registerMode').onclick=()=>setProfileMode('register');
   $('teamsButton').onclick = () => { teamList(); show('teamsDialog'); };
   $('addTeamForm').onsubmit = e => {
     e.preventDefault();
@@ -192,13 +213,20 @@
     if (!name) return;
     const teams = Array.from($('myTeams').querySelectorAll('input:checked'), el => el.value).filter(id => id !== 'everyone');
     try {
-      if (window.Shared?.available || window.Shared?.enabled) {
-        await window.Shared.profile({name,teams,color:$('guestColor').value,code:$('workspaceCode').value});
+      const shared=window.Shared;
+      const login=$('accountLogin').value.trim(),password=$('accountPassword').value;
+      if (shared?.available || shared?.enabled) {
+        if (!shared.enabled && profileMode==='login') await shared.login({login,password});
+        else if (!shared.enabled) await shared.register({name,teams,color:$('guestColor').value,code:$('workspaceCode').value,login,password});
+        else {
+          await shared.profile({name,teams,color:$('guestColor').value});
+          if(login||password) await shared.setAccount({login,password});
+        }
       } else {
         guest.name = name; guest.teams = teams; guest.color=$('guestColor').value; persistGuest(); render();
         toast('Gastprofiel lokaal opgeslagen. Gedeeld gebruik is nog niet geactiveerd.');
       }
-      $('workspaceCode').value = '';
+      $('workspaceCode').value = ''; $('accountPassword').value='';
       $('profileDialog').close();
     } catch (error) { $('connectionStatus').textContent = error.message; }
   };

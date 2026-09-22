@@ -154,6 +154,28 @@ test('archived team projects are retained in shared storage and do not reappear 
   assert.equal(after.archive[0].card.title,'Bewaren');
   assert.equal(after.archive[0].columnName,'Afgerond');
 });
+test('one password account works from multiple devices and keeps its personal actions private',async()=>{
+  const x=setup();
+  const register=await x.request('register','POST',{name:'Tom',login:'tom.test',password:'een-sterk-wachtwoord',code:'test-invite'});
+  assert.equal(register.status,200);
+  const first=(await x.request('board','GET',undefined,register.cookie)).body;
+  const secondLogin=await x.request('login','POST',{login:'tom.test',password:'een-sterk-wachtwoord'});
+  assert.equal(secondLogin.status,200);
+  const second=(await x.request('board','GET',undefined,secondLogin.cookie)).body;
+  assert.equal(first.me.id,second.me.id);
+  assert.equal((await x.request('actions','PUT',{items:[{id:'actie-1',text:'Rapport bellen',done:false}]},register.cookie)).status,200);
+  assert.equal((await x.request('actions','GET',undefined,secondLogin.cookie)).body.items[0].text,'Rapport bellen');
+  const other=await x.guest('Andere persoon');
+  assert.deepEqual((await x.request('actions','GET',undefined,other.cookie)).body.items,[]);
+});
+test('admin code is stored as a privilege on the account after its first successful use',async()=>{
+  const x=setup(); x.env.ADMIN_CODE='admin-test-password';
+  const signup=await x.request('register','POST',{name:'Tom',login:'tom.admin',password:'een-sterk-wachtwoord',code:'test-invite'});
+  assert.equal((await x.request('admin/login','POST',{code:'admin-test-password'},signup.cookie)).status,200);
+  const nextDevice=await x.request('login','POST',{login:'tom.admin',password:'een-sterk-wachtwoord'});
+  assert.equal((await x.request('admin/login','POST',{code:''},nextDevice.cookie)).status,200);
+  assert.equal((await x.request('admin/members','GET',undefined,nextDevice.cookie)).status,200);
+});
 test('admin password grants a short-lived separate session and can safely remove another account',async()=>{
   const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia');
   x.env.ADMIN_CODE='admin-test-password';

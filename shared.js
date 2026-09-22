@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  let enabled = false, available = false, adminReady = false, version = 0, busy = false, dirty = false, blocked = false, debounce;
+  let enabled = false, available = false, adminReady = false, version = 0, busy = false, dirty = false, blocked = false, debounce, actionsDebounce;
   let seen = new Set();
   function showPushStatus(config) {
     const ready=!!config?.publicKey;
@@ -87,6 +87,33 @@
     }
     toast('Gastprofiel verbonden met het gedeelde bord.');
   }
+  async function register(fields) {
+    await api('register',{method:'POST',body:JSON.stringify(fields)});
+    const data=await api('board'); enabled=true; apply(data);
+    if(fields.color) await api('profile',{method:'PUT',body:JSON.stringify(fields)});
+    await loadActions(); toast('Account gemaakt en verbonden met het gedeelde bord.');
+  }
+  async function login(fields) {
+    await api('login',{method:'POST',body:JSON.stringify(fields)});
+    const data=await api('board'); enabled=true; apply(data); await loadActions();
+    toast('Ingelogd op het gedeelde bord.');
+  }
+  async function setAccount(fields) {
+    await api('account',{method:'PUT',body:JSON.stringify(fields)});
+    toast('Gebruikersnaam en wachtwoord opgeslagen.');
+  }
+  async function loadActions() {
+    if(!enabled) return;
+    try { const data=await api('actions'); window.PlanboardActions?.set(data.items); }
+    catch(error) { toast(error.message); }
+  }
+  function saveActions(items) {
+    if(!enabled) return;
+    clearTimeout(actionsDebounce); actionsDebounce=setTimeout(async()=>{
+      try { await api('actions',{method:'PUT',body:JSON.stringify({items})}); }
+      catch(error) { $('saveStatus').textContent='Acties nog niet gedeeld'; toast(error.message); }
+    },250);
+  }
   async function enablePush() {
     try {
       if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window))
@@ -113,7 +140,7 @@
     } catch (error) { toast(error.message); }
   }
   window.Shared = {
-    get enabled(){return enabled;}, get available(){return available;}, get adminReady(){return adminReady;}, profile, enablePush,
+    get enabled(){return enabled;}, get available(){return available;}, get adminReady(){return adminReady;}, profile, register, login, setAccount, loadActions, saveActions, enablePush,
     async adminLogin(code) { return api('admin/login',{method:'POST',body:JSON.stringify({code})}); },
     async members() { return api('admin/members'); },
     async deleteMember(id) { return api('admin/members/'+encodeURIComponent(id),{method:'DELETE'}); },
@@ -235,6 +262,7 @@
         window.Teams.setPeople(data.me,data.members); dirty=true;
         fail({status:409}); render();
       } else apply(data);
+      loadActions();
       if('serviceWorker' in navigator && 'Notification' in window && Notification.permission==='granted') navigator.serviceWorker.register('/sw.js').catch(()=>{});
       refreshPushStatus();
       const cardId = new URL(location.href).searchParams.get('card');

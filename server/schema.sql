@@ -46,6 +46,25 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   member TEXT NOT NULL,
   expires INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS credentials (
+  login TEXT PRIMARY KEY,
+  member TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS member_sessions (
+  token_hash TEXT PRIMARY KEY,
+  member TEXT NOT NULL,
+  expires INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admin_members (
+  member TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS action_lists (
+  member TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  updated INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS delivery_member ON deliveries(member,seen);
 CREATE INDEX IF NOT EXISTS subscription_member ON subscriptions(member);
 CREATE INDEX IF NOT EXISTS admin_session_member ON admin_sessions(member,expires);
+CREATE INDEX IF NOT EXISTS member_session_member ON member_sessions(member,expires);
