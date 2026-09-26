@@ -2,6 +2,7 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 body{margin:0;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+body.long-overview{height:auto;min-height:100dvh;overflow:auto}body.long-overview .workspace{flex:none;min-height:calc(100dvh - 151px)}body.long-overview .todo-overview{overflow:visible}
 button,input,select,textarea{font:inherit}
 button{cursor:pointer;border:1px solid var(--border);border-radius:3px;background:white;padding:7px 12px;color:inherit}
 button:hover{background:#f3f2f1;border-color:#aaa}

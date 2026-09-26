@@ -191,9 +191,13 @@ $('deleteColumn').onclick = () => {
   });
 };
 $('deleteCard').onclick = () => {
-  const id = activeCard.id;
-  askDelete('Project “' + activeCard.title + '” en de bijbehorende opmerkingen verwijderen?', () => {
-    state.cards = state.cards.filter(c => c.id !== id);
+  const card = {...activeCard,title:$('cardTitle').value.trim()||activeCard.title,comment:$('cardComment').value,due:$('dueDate').value,alert:Number($('alertDays').value),timerAt:$('timerAt').value,column:$('moveCard').value||activeCard.column};
+  askDelete('Project “' + card.title + '” uit het actieve bord verwijderen? Het project en de opmerkingen blijven één jaar in Archief bewaard.', () => {
+    const column=state.columns.find(item=>item.id===card.column);
+    const team=(state.teams||[]).find(item=>item.id===(card.teamId||'everyone'));
+    state.archive ||= [];
+    state.archive.push({id:C.uid(),archivedAt:Date.now(),teamName:team?.name||'Voormalig team',columnName:column?.name||'Voormalige kolom',card:{...card}});
+    state.cards = state.cards.filter(c => c.id !== card.id);
     $('cardDialog').close();
   });
 };
@@ -404,6 +408,7 @@ $('todoLists').oninput=event=>{const input=event.target.closest('[data-todo-comm
 $('todoLists').onchange=event=>{const input=event.target.closest('[data-todo-comment]');if(!input)return;const card=state.cards.find(c=>c.id===input.dataset.todoComment);if(card){card.comment=input.value;save();$('saveStatus').textContent='Opmerking gedeeld';}};
 function setView(view) {
   activeView=view;
+  document.body?.classList?.toggle('long-overview',view==='todo');
   $('board').hidden=view!=='board'; $('todoOverview').hidden=view!=='todo'; $('archiveOverview').hidden=view!=='archive'; $('actionsOverview').hidden=view!=='actions';
   $('todoViewButton').textContent=view==='board'?'☷ To do-overzicht':'▦ Terug naar projectstatus';
   $('todoViewButton').setAttribute('aria-pressed',String(view==='todo'));

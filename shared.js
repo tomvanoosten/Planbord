@@ -68,6 +68,8 @@
     try {
       const data = await api('board');
       if (busy || dirty || blocked || dragged || resizing) return;
+      const active=document.activeElement;
+      if (active?.matches?.('[data-action-text],[data-todo-comment]')) { displayNotes(data.notifications); return; }
       if (document.querySelector('dialog[open]')) { displayNotes(data.notifications); return; }
       apply(data, true);
     } catch { $('saveStatus').textContent = 'Verbinding onderbroken · opnieuw proberen…'; }
@@ -112,7 +114,7 @@
     clearTimeout(actionsDebounce); actionsDebounce=setTimeout(async()=>{
       try { await api('actions',{method:'PUT',body:JSON.stringify({items})}); }
       catch(error) { $('saveStatus').textContent='Acties nog niet gedeeld'; toast(error.message); }
-    },250);
+    },1000);
   }
   async function enablePush() {
     try {

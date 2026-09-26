@@ -28,6 +28,7 @@
   function refresh() {
     if (!state.teams.some(t => t.id === filter)) filter = 'everyone';
     $('teamFilter').innerHTML = options(filter);
+    $('profileButton').textContent=window.Shared?.enabled ? 'Ingelogd: '+guest.name : 'Inloggen / account';
   }
   function columns(teamId = filter) { return state.columns.filter(col => (col.teamId || 'everyone') === teamId); }
   function ensureColumns(teamId = filter) {
