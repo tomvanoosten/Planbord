@@ -8,6 +8,7 @@ let state, activeCard, activeColumn, insertIndex, pendingDelete, confirmUnlockTi
 let todoDraftTimer;
 const ACTIONS_KEY='planboard-actions';
 let actionItems=[];
+let messageItems=[],messageFavorites=[],selectedMessageRecipient='',messageSearch='';
 try { actionItems=JSON.parse(localStorage.getItem(ACTIONS_KEY))||[]; } catch {}
 try {
   const raw = localStorage.getItem(KEY);
@@ -68,6 +69,7 @@ function render() {
   renderTodoLists();
   renderArchive();
   renderActions();
+  renderMessages();
 }
 function allCardsForActiveTeam() { return state.cards.filter(card => !window.Teams || window.Teams.matches(card)); }
 function isOverdue(card) { return !!card.due && new Date(card.due + 'T23:59:59').getTime() < Date.now(); }
@@ -162,16 +164,16 @@ $('nameForm').onsubmit = event => {
   state.columns.splice(actualIndex, 0, {id: C.uid(), name, teamId, reminder: '', recipients:['team:'+teamId]});
   save(); render(); $('nameDialog').close(); $('columnDialog').close(); toast('Kolom toegevoegd.');
 };
-function askDelete(text, action, delay = 0, remote = false) {
+function askDelete(text, action, delay = 0, remote = false, confirmLabel = 'Verwijderen') {
   globalThis.clearInterval?.(confirmUnlockTimer);
   $('confirmHeading').textContent = 'Weet je het zeker?';
   $('confirmDelete').disabled = delay > 0;
-  $('confirmDelete').textContent = delay ? 'Verwijderen (' + delay + ')' : 'Verwijderen';
+  $('confirmDelete').textContent = delay ? confirmLabel + ' (' + delay + ')' : confirmLabel;
   if (delay) {
     let seconds = delay;
     confirmUnlockTimer = setInterval(() => {
       seconds--;
-      $('confirmDelete').textContent = seconds ? 'Verwijderen (' + seconds + ')' : 'Verwijderen';
+      $('confirmDelete').textContent = seconds ? confirmLabel + ' (' + seconds + ')' : confirmLabel;
       if (!seconds) { clearInterval(confirmUnlockTimer); $('confirmDelete').disabled = false; }
     }, 1000);
   }
@@ -192,14 +194,16 @@ $('deleteColumn').onclick = () => {
 };
 $('deleteCard').onclick = () => {
   const card = {...activeCard,title:$('cardTitle').value.trim()||activeCard.title,comment:$('cardComment').value,due:$('dueDate').value,alert:Number($('alertDays').value),timerAt:$('timerAt').value,column:$('moveCard').value||activeCard.column};
-  askDelete('Project “' + card.title + '” uit het actieve bord verwijderen? Het project en de opmerkingen blijven één jaar in Archief bewaard.', () => {
+  askDelete('Project “' + card.title + '” naar Archief verplaatsen? Het project en de opmerkingen blijven één jaar in Archief bewaard.', () => {
     const column=state.columns.find(item=>item.id===card.column);
     const team=(state.teams||[]).find(item=>item.id===(card.teamId||'everyone'));
-    state.archive ||= [];
-    state.archive.push({id:C.uid(),archivedAt:Date.now(),teamName:team?.name||'Voormalig team',columnName:column?.name||'Voormalige kolom',card:{...card}});
+    const archiveItem={id:C.uid(),archivedAt:Date.now(),teamName:team?.name||'Voormalig team',columnName:column?.name||'Voormalige kolom',card:{...card}};
+    // Replace the list instead of mutating an optional legacy field, so both local
+    // storage and the shared-board update always receive the archived project.
+    state.archive=[...(Array.isArray(state.archive)?state.archive:[]),archiveItem];
     state.cards = state.cards.filter(c => c.id !== card.id);
     $('cardDialog').close();
-  });
+  }, 0, false, 'Naar archief');
 };
 $('confirmDelete').onclick = () => {
   if ($('confirmDelete').disabled) return;
@@ -218,16 +222,28 @@ document.querySelectorAll('[data-close]').forEach(button => {
   };
 });
 async function showAdminMembers() {
-  const data=await window.Shared.members();
+  const [data,backupData]=await Promise.all([window.Shared.members(),window.Shared.backups()]);
   const me=window.Teams?.me?.();
   $('adminLoginForm').hidden=true; $('adminMembers').hidden=false;
   $('adminMemberList').innerHTML=data.members.map(member=>'<div class="admin-member"><span class="person-chip" style="--person-color:'+esc(member.color)+'">'+esc(member.name)+'</span><small>'+esc((member.teams||[]).join(', ') || 'Alleen Iedereen')+'</small>'+ (member.id===me?.id?'<small>jij</small>':'<button class="danger" data-admin-delete="'+esc(member.id)+'" data-admin-name="'+esc(member.name)+'">Verwijderen</button>')+'</div>').join('');
+  $('adminBackupList').innerHTML=backupData.backups.length?backupData.backups.map(backup=>'<div class="admin-backup"><div><strong>'+esc(backup.day.split('-').reverse().join('-'))+'</strong><small>'+esc(new Date(backup.created).toLocaleString('nl-NL'))+' · '+Math.max(1,Math.round(backup.size/1024))+' kB</small></div><button data-download-backup="'+esc(backup.day)+'">Downloaden</button></div>').join(''):'<p class="help">De eerste back-up verschijnt na de eerstvolgende middernacht.</p>';
 }
-$('adminButton').onclick=()=>{ $('profileDialog').close(); $('adminCode').value=''; $('adminLoginForm').hidden=false; $('adminMembers').hidden=true; show('adminDialog'); };
-$('adminLoginForm').onsubmit=async event=>{ event.preventDefault(); try { await window.Shared.adminLogin($('adminCode').value); $('adminCode').value=''; await showAdminMembers(); } catch(error) { toast(error.message); } };
+$('adminButton').onclick=async()=>{
+  $('profileDialog').close(); $('adminCode').value=''; show('adminDialog');
+  if(window.Shared?.isAdmin) {
+    $('adminLoginForm').hidden=true; $('adminMembers').hidden=false;
+    try { await showAdminMembers(); } catch(error) { toast(error.message); }
+  } else { $('adminLoginForm').hidden=false; $('adminMembers').hidden=true; }
+};
+$('adminLoginForm').onsubmit=async event=>{ event.preventDefault(); try { await window.Shared.adminLogin($('adminCode').value); $('adminCode').value=''; render(); await showAdminMembers(); } catch(error) { toast(error.message); } };
 $('adminMemberList').onclick=event=>{
   const button=event.target.closest('[data-admin-delete]'); if(!button) return;
   askDelete('Account “'+button.dataset.adminName+'” verwijderen? Dit kan niet ongedaan worden gemaakt. Projecten blijven behouden.',async()=>{ await window.Shared.deleteMember(button.dataset.adminDelete); await showAdminMembers(); },3,true);
+};
+$('adminBackupList').onclick=async event=>{
+  const button=event.target.closest('[data-download-backup]');if(!button)return;
+  try { const data=await window.Shared.backup(button.dataset.downloadBackup);const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));link.download='planboard-backup-'+data.day+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000); }
+  catch(error){toast(error.message);}
 };
 if ($('cardDialog').addEventListener) {
   $('cardDialog').addEventListener('cancel', event => { event.preventDefault(); persistActiveCard({close:true,quiet:true}); });
@@ -346,17 +362,26 @@ function saveTodoPreferences(lists) { localStorage.setItem(TODO_KEY,JSON.stringi
 function todoColumnName(card) { return state.columns.find(col=>col.id===card.column)?.name || 'Voormalige kolom'; }
 function archiveMonths() {
   const now=new Date(),months=[];
-  for(let offset=0;offset<12;offset++) { const date=new Date(now.getFullYear(),now.getMonth()-offset,1); months.push({key:date.toISOString().slice(0,7),name:new Intl.DateTimeFormat('nl-NL',{month:'long',year:'numeric'}).format(date)}); }
+  for(let offset=0;offset<12;offset++) { const date=new Date(now.getFullYear(),now.getMonth()-offset,1); months.push({key:archiveMonthKey(date),name:new Intl.DateTimeFormat('nl-NL',{month:'long',year:'numeric'}).format(date)}); }
   return months;
+}
+function archiveMonthKey(value) {
+  const date=value instanceof Date?value:new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return '';
+  return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0');
 }
 function renderArchive() {
   if (!$('archiveMonths')) return;
   const archived=state.archive||[];
   $('archiveMonths').innerHTML=archiveMonths().map(month=>{
-    const items=archived.filter(item=>new Date(item.archivedAt).toISOString().slice(0,7)===month.key).sort((a,b)=>b.archivedAt-a.archivedAt);
-    return '<section class="archive-month"><h3>'+esc(month.name)+'</h3><span class="archive-count">('+items.length+')</span><div class="archive-items">'+(items.length?items.map(item=>'<article class="archive-card"><strong>'+esc(item.card.title)+'</strong><small>Team: '+esc(item.teamName)+' · Kolom: '+esc(item.columnName)+'</small>'+(item.card.due?'<small>▦ Deadline: '+esc(item.card.due.split('-').reverse().join('-'))+'</small>':'')+(item.card.timerAt?'<small>◷ Persoonlijke herinnering</small>':'')+(item.card.comment?'<p>'+esc(item.card.comment)+'</p>':'<p class="archive-empty-note">Geen opmerking.</p>')+'<time>Gearchiveerd '+esc(new Date(item.archivedAt).toLocaleDateString('nl-NL'))+'</time></article>').join(''):'<p class="archive-empty-note">Geen projecten.</p>')+'</div></section>';
+    const items=archived.filter(item=>archiveMonthKey(item.archivedAt)===month.key).sort((a,b)=>b.archivedAt-a.archivedAt);
+    return '<section class="archive-month"><h3>'+esc(month.name)+'</h3><span class="archive-count">('+items.length+')</span><div class="archive-items">'+(items.length?items.map(item=>'<article class="archive-card"><strong>'+esc(item.card.title)+'</strong><small>Team: '+esc(item.teamName)+' · Kolom: '+esc(item.columnName)+'</small>'+(item.card.due?'<small>▦ Deadline: '+esc(item.card.due.split('-').reverse().join('-'))+'</small>':'')+(item.card.timerAt?'<small>◷ Persoonlijke herinnering</small>':'')+(item.card.comment?'<p>'+esc(item.card.comment)+'</p>':'<p class="archive-empty-note">Geen opmerking.</p>')+'<time>Gearchiveerd '+esc(new Date(item.archivedAt).toLocaleDateString('nl-NL'))+'</time>'+(window.Shared?.isAdmin?'<button class="archive-purge danger" data-purge-archive="'+esc(item.id)+'" data-purge-name="'+esc(item.card.title)+'">Definitief verwijderen</button>':'')+'</article>').join(''):'<p class="archive-empty-note">Geen projecten.</p>')+'</div></section>';
   }).join('');
 }
+$('archiveMonths').onclick=event=>{
+  const button=event.target.closest('[data-purge-archive]');if(!button||!window.Shared?.isAdmin)return;
+  askDelete('Archiefproject “'+button.dataset.purgeName+'” definitief verwijderen? Dit verdwijnt voor iedereen en kan alleen via een dagelijkse back-up worden teruggehaald.',async()=>{await window.Shared.deleteArchived(button.dataset.purgeArchive);},3,true,'Definitief verwijderen');
+};
 function normalizeActions(items) {
   return Array.isArray(items) ? items.slice(0,250).map(item=>({id:String(item.id||C.uid()),text:String(item.text||'').slice(0,4000),done:!!item.done})) : [];
 }
@@ -377,7 +402,57 @@ function updateAction(id,fields) {
   else { const item=actionItems.find(entry=>entry.id===id); if(!item)return; Object.assign(item,fields); }
   saveActions();
 }
-window.PlanboardActions={set(items){actionItems=normalizeActions(items);localStorage.setItem(ACTIONS_KEY,JSON.stringify(actionItems));renderActions();},get(){return normalizeActions(actionItems);}};
+window.PlanboardActions={
+  set(items){actionItems=normalizeActions(items);localStorage.setItem(ACTIONS_KEY,JSON.stringify(actionItems));renderActions();},
+  get(){return normalizeActions(actionItems);},
+  add(text){const value=String(text||'').trim();if(!value)return;actionItems.push({id:C.uid(),text:value,done:false});saveActions();renderActions();}
+};
+function normalizeMessages(items) {
+  return Array.isArray(items)?items.slice(0,250).map(item=>({id:String(item.id),sender:String(item.sender),senderName:String(item.senderName||'Onbekend account'),senderColor:C.color(item.senderColor,item.sender),body:String(item.body||'').slice(0,4000),created:Number(item.created)||Date.now(),seen:!!item.seen})):[];
+}
+function selectMessageRecipient(id,prefill='') {
+  selectedMessageRecipient=id;
+  renderMessages();
+  if(prefill) $('messageText').value=prefill;
+  $('messageText').focus?.();
+}
+function renderMessages() {
+  if(!$('messageInbox')) return;
+  const me=window.Teams?.me?.(),people=(window.Teams?.people?.()||[]).filter(person=>person.id!==me?.id);
+  const favoriteSet=new Set(messageFavorites),query=messageSearch.trim().toLocaleLowerCase();
+  const sorted=people.filter(person=>!query||person.name.toLocaleLowerCase().includes(query)).sort((a,b)=>(favoriteSet.has(b.id)-favoriteSet.has(a.id))||a.name.localeCompare(b.name,'nl'));
+  $('messagePeople').innerHTML=sorted.length?sorted.map(person=>'<div class="message-person'+(person.id===selectedMessageRecipient?' selected':'')+'"><button class="message-person-main" data-message-person="'+esc(person.id)+'"><span class="person-chip" style="--person-color:'+esc(C.color(person.color,person.id))+'">'+esc(person.name)+'</span></button><button class="message-favorite" data-message-favorite="'+esc(person.id)+'" aria-label="'+(favoriteSet.has(person.id)?'Uit favorieten halen':'Aan favorieten toevoegen')+'" title="Favoriet">'+(favoriteSet.has(person.id)?'★':'☆')+'</button></div>').join(''):'<p class="help">Geen accounts gevonden.</p>';
+  const recipient=people.find(person=>person.id===selectedMessageRecipient);
+  $('messageCompose').hidden=!recipient; $('messageComposeEmpty').hidden=!!recipient;
+  if(recipient) $('messageRecipientName').textContent=recipient.name;
+  const unread=messageItems.filter(item=>!item.seen).length;
+  $('messageBadge').textContent=unread; $('messageBadge').hidden=!unread;
+  $('messageInboxCount').textContent=messageItems.length+' bericht'+(messageItems.length===1?'':'en');
+  $('messageInbox').innerHTML=messageItems.length?messageItems.map(item=>'<article class="message-card'+(item.seen?'':' unread')+'" data-message="'+esc(item.id)+'"><header><span class="person-chip" style="--person-color:'+esc(item.senderColor)+'">'+esc(item.senderName)+'</span><time>'+esc(new Date(item.created).toLocaleString('nl-NL'))+'</time></header><p>'+esc(item.body)+'</p><div class="message-actions"><button data-message-action="actions" data-message-id="'+esc(item.id)+'">＋ Naar Acties</button><button data-message-action="reply" data-message-id="'+esc(item.id)+'">↩ Beantwoorden</button><button class="danger" data-message-action="delete" data-message-id="'+esc(item.id)+'">Wissen</button></div></article>').join(''):'<div class="message-empty"><strong>Nog geen berichten</strong><p>Privéberichten die anderen aan jou sturen verschijnen hier.</p></div>';
+}
+window.PlanboardMessages={
+  set(items,favorites,alertNew=false){
+    const previous=new Set(messageItems.map(item=>item.id)); messageItems=normalizeMessages(items); messageFavorites=Array.isArray(favorites)?favorites.map(String):[];
+    if(alertNew) messageItems.filter(item=>!item.seen&&!previous.has(item.id)).forEach(item=>toast('Nieuw bericht van '+item.senderName+': '+item.body.slice(0,120)));
+    renderMessages();
+  },
+  markRead(){messageItems.forEach(item=>item.seen=true);renderMessages();}
+};
+$('messagePersonSearch').oninput=event=>{messageSearch=event.target.value;renderMessages();};
+$('messagePeople').onclick=event=>{
+  const favorite=event.target.closest('[data-message-favorite]'),person=event.target.closest('[data-message-person]');
+  if(favorite){const id=favorite.dataset.messageFavorite,index=messageFavorites.indexOf(id);if(index>=0)messageFavorites.splice(index,1);else messageFavorites.unshift(id);window.Shared?.saveMessageFavorites?.(messageFavorites);renderMessages();return;}
+  if(person)selectMessageRecipient(person.dataset.messagePerson);
+};
+$('cancelMessage').onclick=()=>{selectedMessageRecipient='';$('messageText').value='';renderMessages();};
+$('messageCompose').onsubmit=async event=>{event.preventDefault();const text=$('messageText').value.trim();if(!text||!selectedMessageRecipient)return;try{await window.Shared.sendMessage(selectedMessageRecipient,text);$('messageText').value='';toast('Bericht verstuurd.');}catch(error){toast(error.message);}};
+$('messageInbox').onclick=async event=>{
+  const button=event.target.closest('[data-message-action]');if(!button)return;
+  const item=messageItems.find(message=>message.id===button.dataset.messageId);if(!item)return;
+  if(button.dataset.messageAction==='actions'){window.PlanboardActions.add(item.body);toast('Bericht aan je Acties toegevoegd. Het bericht blijft staan.');}
+  else if(button.dataset.messageAction==='reply') selectMessageRecipient(item.sender,'Antwoord op je bericht:\n');
+  else if(button.dataset.messageAction==='delete'){try{await window.Shared.deleteMessage(item.id);messageItems=messageItems.filter(message=>message.id!==item.id);renderMessages();toast('Bericht gewist.');}catch(error){toast(error.message);}}
+};
 function renderTodoLists() {
   if (!$('todoLists') || !window.Teams) return;
   const lists=todoPreferences();
@@ -408,16 +483,19 @@ $('todoLists').oninput=event=>{const input=event.target.closest('[data-todo-comm
 $('todoLists').onchange=event=>{const input=event.target.closest('[data-todo-comment]');if(!input)return;const card=state.cards.find(c=>c.id===input.dataset.todoComment);if(card){card.comment=input.value;save();$('saveStatus').textContent='Opmerking gedeeld';}};
 function setView(view) {
   activeView=view;
-  document.body?.classList?.toggle('long-overview',view==='todo');
-  $('board').hidden=view!=='board'; $('todoOverview').hidden=view!=='todo'; $('archiveOverview').hidden=view!=='archive'; $('actionsOverview').hidden=view!=='actions';
+  document.body?.classList?.toggle('long-overview',view==='todo'||view==='messages');
+  $('board').hidden=view!=='board'; $('todoOverview').hidden=view!=='todo'; $('archiveOverview').hidden=view!=='archive'; $('actionsOverview').hidden=view!=='actions'; $('messagesOverview').hidden=view!=='messages';
   $('todoViewButton').textContent=view==='board'?'☷ To do-overzicht':'▦ Terug naar projectstatus';
   $('todoViewButton').setAttribute('aria-pressed',String(view==='todo'));
   $('archiveViewButton').setAttribute('aria-pressed',String(view==='archive'));
   $('actionsViewButton').setAttribute('aria-pressed',String(view==='actions'));
+  $('messagesViewButton').setAttribute('aria-pressed',String(view==='messages'));
+  if(view==='messages') window.Shared?.markMessagesRead?.();
 }
 $('todoViewButton').onclick=()=>setView(activeView==='board'?'todo':'board');
 $('archiveViewButton').onclick=()=>setView(activeView==='archive'?'board':'archive');
 $('actionsViewButton').onclick=()=>setView(activeView==='actions'?'board':'actions');
+$('messagesViewButton').onclick=()=>setView(activeView==='messages'?'board':'messages');
 $('newAction').onclick=()=>{actionItems.push({id:C.uid(),text:'',done:false});saveActions();renderActions();$('actionRows').querySelector?.('textarea')?.focus();};
 $('actionRows').oninput=event=>{const input=event.target.closest('[data-action-text]');if(!input)return;autoSizeAction(input);if(input.dataset.actionText==='new')return;updateAction(input.dataset.actionText,{text:input.value});};
 $('actionRows').onchange=event=>{const text=event.target.closest('[data-action-text]');if(text&&text.dataset.actionText==='new')return updateAction('new',{text:text.value});const input=event.target.closest('[data-action-done]');if(!input)return;updateAction(input.dataset.actionDone,{done:input.checked});};

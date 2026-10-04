@@ -12,7 +12,7 @@
       {id: uid(), title: '225063, AP04 Enschede', column: 'stage-0', comment: '', enteredAt: now, due: '', alert: 1},
       {id: uid(), title: '225845, Nijverdal', column: 'stage-3', comment: '', enteredAt: now, due: '', alert: 1},
       {id: uid(), title: '225774, Utrecht', column: 'stage-7', comment: '', enteredAt: now, due: '', alert: 1}
-    ], notifications: []};
+    ], notifications: [], archive: []};
   }
   function normalize(data, now = Date.now()) {
     if (!data || !Array.isArray(data.columns) || !data.columns.length || !Array.isArray(data.cards)) throw new Error('Ongeldige bordgegevens');

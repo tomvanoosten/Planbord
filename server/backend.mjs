@@ -63,7 +63,27 @@ async function accountTables(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS credentials (login TEXT PRIMARY KEY,member TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS member_sessions (token_hash TEXT PRIMARY KEY,member TEXT NOT NULL,expires INTEGER NOT NULL)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS action_lists (member TEXT PRIMARY KEY,data TEXT NOT NULL,updated INTEGER NOT NULL)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY,sender TEXT NOT NULL,recipient TEXT NOT NULL,body TEXT NOT NULL,created INTEGER NOT NULL,seen INTEGER NOT NULL DEFAULT 0)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS message_favorites (member TEXT PRIMARY KEY,data TEXT NOT NULL,updated INTEGER NOT NULL)').run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient,created)').run();
   await adminTable(env);
+}
+async function backupTable(env) {
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS board_backups (day TEXT PRIMARY KEY,created INTEGER NOT NULL,version INTEGER NOT NULL,data TEXT NOT NULL)').run();
+}
+function amsterdamTime(now=Date.now()) {
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Amsterdam',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(new Date(now)).filter(part=>part.type!=='literal').map(part=>[part.type,part.value]));
+  return {day:parts.year+'-'+parts.month+'-'+parts.day,hour:Number(parts.hour)};
+}
+export async function backupDaily(env,now=Date.now(),force=false) {
+  if(!env.DB) return false;
+  const local=amsterdamTime(now);
+  if(!force&&local.hour!==0) return false;
+  await backupTable(env);
+  const current=await row(env);
+  const inserted=await env.DB.prepare('INSERT OR IGNORE INTO board_backups(day,created,version,data) VALUES(?,?,?,?)').bind(local.day,Number(now),current.version,current.data).run();
+  await env.DB.prepare('DELETE FROM board_backups WHERE day NOT IN (SELECT day FROM board_backups ORDER BY day DESC LIMIT 7)').run();
+  return !!inserted.meta.changes;
 }
 async function adminAuth(req,env,m) {
   if (!env.ADMIN_CODE) throw error('De beheerder moet eerst een adminwachtwoord instellen.',503);
@@ -99,32 +119,44 @@ function validBoard(input,old,members) {
   const unique = list => new Set(list.map(x=>x.id)).size === list.length;
   if (!unique(s.columns)||!unique(s.cards)||!unique(s.teams)) throw error('Dubbele identificatie.');
   s.teams = s.teams.map(t=>({id:String(t.id),name:t.id==='everyone'?'Iedereen':cleanName(t.name,60)}));
+  const memberTeams = new Map(members.map(member=>{
+    let teams=member.teams;
+    if(typeof teams==='string') { try { teams=JSON.parse(teams); } catch { teams=[]; } }
+    return [member.id,Array.isArray(teams)?teams:[]];
+  }));
   const recipientSet = new Set([...s.teams.map(t=>'team:'+t.id),...members.map(m=>'user:'+m.id)]);
-  const recipients = a => {
-    a ||= ['team:everyone'];
+  const recipients = (a,teamId='everyone') => {
+    a ||= ['team:'+teamId];
     if (!Array.isArray(a) || !a.length || a.length>200 || a.some(x=>!recipientSet.has(x))) throw error('Ongeldige ontvangers.');
-    return [...new Set(a)];
+    const unique=[...new Set(a)];
+    if(teamId==='everyone') return unique;
+    const allowed=unique.filter(value=>value==='team:'+teamId || (value.startsWith('user:')&&memberTeams.get(value.slice(5))?.includes(teamId)));
+    return allowed.length?allowed:['team:'+teamId];
   };
   s.columns = s.columns.map(col=>{
     const previous=old.columns.find(x=>x.id===col.id);
     const teamId=String(submittedTeams.get(String(col.id)) ?? previous?.teamId ?? 'everyone');
     if (!s.teams.some(t=>t.id===teamId)) throw error('Kolomteam bestaat niet.');
     return {id:String(col.id),name:cleanName(col.name,100),teamId,width:C.width(col.width ?? previous?.width),
-      reminder:col.reminder==='' ? '' : Number(col.reminder || 0), recipients:recipients(col.recipients)};
+      reminder:col.reminder==='' ? '' : Number(col.reminder || 0), recipients:recipients(col.recipients,teamId)};
   });
   if (s.columns.some(c=>c.reminder!==''&&(!Number.isInteger(c.reminder)||c.reminder<0||c.reminder>3650))) throw error('Ongeldige kolomduur.');
   for (const [key,value] of Object.entries(s.labels)) if (!['title','comment','date','lead'].includes(key) || typeof value !== 'string' || value.length>60) throw error('Ongeldige veldnamen.');
   s.cards = s.cards.map(c => {
-    if (!s.columns.some(x=>x.id===c.column)) throw error('Kolom bestaat niet.');
+    const column=s.columns.find(x=>x.id===c.column);
+    if (!column) throw error('Kolom bestaat niet.');
     if (c.comment.length>20000 || !Number.isInteger(c.alert)||c.alert<0||c.alert>3650) throw error('Ongeldige projectgegevens.');
     if (c.due && !/^\d{4}-\d{2}-\d{2}$/.test(c.due)) throw error('Ongeldige datum.');
     if (c.timerAt && !Number.isFinite(new Date(c.timerAt).getTime())) throw error('Ongeldige timer.');
     const prev = old.cards.find(x=>x.id===c.id);
+    const teamId=String(c.teamId||column.teamId||'everyone');
+    if(column.teamId!==teamId) throw error('Project en kolom horen niet bij hetzelfde team.');
     const assignees=c.assignees ?? prev?.assignees ?? [];
     if (!Array.isArray(assignees) || assignees.length>100 || assignees.some(id=>!members.some(m=>m.id===id))) throw error('Ongeldige verantwoordelijke.');
+    const scopedAssignees=teamId==='everyone' ? assignees : assignees.filter(id=>memberTeams.get(id)?.includes(teamId));
     const card = {id:c.id,title:cleanName(c.title),comment:c.comment,due:c.due,alert:c.alert,
-      timerAt:c.timerAt,column:c.column,teamId:c.teamId||'everyone',assignees:[...new Set(assignees)],
-      dueRecipients:recipients(c.dueRecipients),timerRecipients:recipients(c.timerRecipients),
+      timerAt:c.timerAt,column:c.column,teamId,assignees:[...new Set(scopedAssignees)],
+      dueRecipients:recipients(c.dueRecipients,teamId),timerRecipients:recipients(c.timerRecipients,teamId),
       enteredAt:prev?.column===c.column?prev.enteredAt:Date.now(),
       dueEpoch:c.due ? Number(c.dueEpoch ?? C.dueTime(c.due,c.alert)):null,
       timerEpoch:c.timerAt?Number(c.timerEpoch ?? new Date(c.timerAt).getTime()):null};
@@ -150,10 +182,21 @@ async function inbox(env,id,unread=false) {
     (unread?' AND d.seen=0':'')+' ORDER BY n.created DESC LIMIT 100').bind(id).all();
   return rows.results.map(r=>({...JSON.parse(r.data),read:!!r.seen}));
 }
+async function messageData(env,id) {
+  await accountTables(env);
+  const rows=(await env.DB.prepare("SELECT x.id,x.sender,x.body,x.created,x.seen,m.name,s.value AS color FROM messages x JOIN members m ON m.id=x.sender LEFT JOIN app_settings s ON s.key='member_color:'||m.id WHERE x.recipient=? ORDER BY x.created DESC LIMIT 250").bind(id).all()).results;
+  const members=await membersWithColors(env),validIds=new Set(members.map(member=>member.id));
+  const favoriteRow=await env.DB.prepare('SELECT data FROM message_favorites WHERE member=?').bind(id).first();
+  let favorites=[];
+  try { favorites=JSON.parse(favoriteRow?.data||'[]').filter(value=>validIds.has(value)&&value!==id); } catch {}
+  return {messages:rows.map(row=>({id:row.id,sender:row.sender,senderName:row.name,senderColor:C.color(row.color,row.sender),body:row.body,created:Number(row.created),seen:!!row.seen})),messageFavorites:[...new Set(favorites)]};
+}
 async function envelope(env,m) {
   const r = await row(env);
   const members = await membersWithColors(env);
-  return {state:JSON.parse(r.data),version:r.version,me:memberView(members.find(p=>p.id===m.id)||m),members:members.map(memberView),notifications:await inbox(env,m.id)};
+  await accountTables(env);
+  const admin=await env.DB.prepare('SELECT member FROM admin_members WHERE member=?').bind(m.id).first();
+  return {state:JSON.parse(r.data),version:r.version,me:memberView(members.find(p=>p.id===m.id)||m),members:members.map(memberView),notifications:await inbox(env,m.id),isAdmin:!!admin,...await messageData(env,m.id)};
 }
 export async function api(request,env,ctx={waitUntil(){}}) {
   try {
@@ -235,9 +278,66 @@ export async function api(request,env,ctx={waitUntil(){}}) {
       await env.DB.prepare('INSERT INTO action_lists(member,data,updated) VALUES(?,?,?) ON CONFLICT(member) DO UPDATE SET data=excluded.data,updated=excluded.updated').bind(m.id,JSON.stringify(items),Date.now()).run();
       return json({ok:true});
     }
+    if (path==='messages'&&request.method==='POST') {
+      const b=await body(request),recipient=String(b.recipient||''),message=String(b.body||'').trim();
+      if(!message||message.length>4000) throw error('Een bericht moet 1 tot 4000 tekens bevatten.');
+      if(recipient===m.id) throw error('Kies een ander account als ontvanger.');
+      const target=await env.DB.prepare('SELECT id FROM members WHERE id=? AND expires>?').bind(recipient,Date.now()).first();
+      if(!target) throw error('Deze ontvanger bestaat niet meer.',404);
+      await accountTables(env);
+      const recent=await env.DB.prepare('SELECT COUNT(*) AS count FROM messages WHERE sender=? AND created>?').bind(m.id,Date.now()-60000).first();
+      if(Number(recent.count)>=30) throw error('Je stuurt te snel berichten. Probeer het zo opnieuw.',429);
+      const id=crypto.randomUUID(),created=Date.now();
+      await env.DB.prepare('INSERT INTO messages(id,sender,recipient,body,created,seen) VALUES(?,?,?,?,?,0)').bind(id,m.id,recipient,message,created).run();
+      return json({ok:true,message:{id,sender:m.id,recipient,body:message,created,seen:false}});
+    }
+    if (path==='messages/read'&&request.method==='POST') {
+      await accountTables(env);
+      await env.DB.prepare('UPDATE messages SET seen=1 WHERE recipient=?').bind(m.id).run();
+      return json({ok:true});
+    }
+    if (path==='messages/favorites'&&request.method==='PUT') {
+      const b=await body(request);
+      if(!Array.isArray(b.ids)||b.ids.length>50||b.ids.some(id=>typeof id!=='string')) throw error('Ongeldige favorieten.');
+      const existing=new Set((await env.DB.prepare('SELECT id FROM members WHERE expires>?').bind(Date.now()).all()).results.map(member=>member.id));
+      const ids=[...new Set(b.ids)].filter(id=>id!==m.id&&existing.has(id));
+      await accountTables(env);
+      await env.DB.prepare('INSERT INTO message_favorites(member,data,updated) VALUES(?,?,?) ON CONFLICT(member) DO UPDATE SET data=excluded.data,updated=excluded.updated').bind(m.id,JSON.stringify(ids),Date.now()).run();
+      return json({ok:true,ids});
+    }
+    const deleteMessage=path.match(/^messages\/([a-f0-9-]{8,})$/);
+    if(deleteMessage&&request.method==='DELETE') {
+      await accountTables(env);
+      const result=await env.DB.prepare('DELETE FROM messages WHERE id=? AND recipient=?').bind(deleteMessage[1],m.id).run();
+      if(!result.meta.changes) throw error('Dit bericht bestaat niet of is niet van jou.',404);
+      return json({ok:true});
+    }
     if (path==='admin/members'&&request.method==='GET') {
       await adminAuth(request,env,m);
       return json({members:(await membersWithColors(env)).map(memberView)});
+    }
+    if(path==='admin/backups'&&request.method==='GET') {
+      await adminAuth(request,env,m); await backupTable(env);
+      const backups=(await env.DB.prepare('SELECT day,created,version,LENGTH(data) AS size FROM board_backups ORDER BY day DESC LIMIT 7').all()).results;
+      return json({backups:backups.map(item=>({...item,created:Number(item.created),version:Number(item.version),size:Number(item.size)}))});
+    }
+    const getBackup=path.match(/^admin\/backups\/(\d{4}-\d{2}-\d{2})$/);
+    if(getBackup&&request.method==='GET') {
+      await adminAuth(request,env,m); await backupTable(env);
+      const snapshot=await env.DB.prepare('SELECT * FROM board_backups WHERE day=?').bind(getBackup[1]).first();
+      if(!snapshot) throw error('Deze back-up bestaat niet meer.',404);
+      return json({format:'planboard-daily-backup',day:snapshot.day,created:Number(snapshot.created),version:Number(snapshot.version),state:JSON.parse(snapshot.data)},200,{'Content-Disposition':'attachment; filename="planboard-backup-'+snapshot.day+'.json"'});
+    }
+    const deleteArchived=path.match(/^admin\/archive\/([a-zA-Z0-9-]{8,})$/);
+    if(deleteArchived&&request.method==='DELETE') {
+      await adminAuth(request,env,m);
+      const current=await row(env),state=C.normalize(JSON.parse(current.data));
+      const before=state.archive.length;
+      state.archive=state.archive.filter(item=>item.id!==deleteArchived[1]);
+      if(state.archive.length===before) throw error('Dit archiefproject bestaat niet meer.',404);
+      const result=await env.DB.prepare('UPDATE board SET data=?,version=version+1,stamp=? WHERE id=1 AND version=?').bind(JSON.stringify(state),crypto.randomUUID(),current.version).run();
+      if(!result.meta.changes) throw error('Een collega heeft het bord intussen gewijzigd.',409);
+      return json(await envelope(env,m));
     }
     const deleteMember=path.match(/^admin\/members\/([a-f0-9-]{8,})$/);
     if (deleteMember&&request.method==='DELETE') {
@@ -264,6 +364,8 @@ export async function api(request,env,ctx={waitUntil(){}}) {
         env.DB.prepare('DELETE FROM member_sessions WHERE member=?').bind(id),
         env.DB.prepare('DELETE FROM credentials WHERE member=?').bind(id),
         env.DB.prepare('DELETE FROM action_lists WHERE member=?').bind(id),
+        env.DB.prepare('DELETE FROM messages WHERE sender=? OR recipient=?').bind(id,id),
+        env.DB.prepare('DELETE FROM message_favorites WHERE member=?').bind(id),
         env.DB.prepare('DELETE FROM members WHERE id=?').bind(id)
       ]);
       return json({ok:true});
@@ -285,7 +387,7 @@ export async function api(request,env,ctx={waitUntil(){}}) {
     if (path==='board'&&request.method==='PUT') {
       const b=await body(request),r=await row(env);
       if (b.version!==r.version) throw error('Een collega heeft het bord gewijzigd.',409);
-      const members=(await env.DB.prepare('SELECT id FROM members').all()).results;
+      const members=(await env.DB.prepare('SELECT id,teams FROM members').all()).results;
       const s=validBoard(b.state,JSON.parse(r.data),members);
       const update=await env.DB.prepare('UPDATE board SET data=?,version=version+1,stamp=? WHERE id=1 AND version=?').bind(
         JSON.stringify(s),crypto.randomUUID(),b.version).run();
@@ -356,6 +458,7 @@ export async function tick(env,{scheduled=false,dispatchPush=true}={}) {
   }
   if (dispatchPush) await dispatch(env);
   if (scheduled) {
+    await backupDaily(env);
     await settingsTable(env);
     await env.DB.prepare("INSERT INTO app_settings(key,value) VALUES('scheduler_success',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(Date.now())).run();
   }

@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {api,tick} from './backend.mjs';
+import {api,tick,backupDaily} from './backend.mjs';
 import {validEndpoint,authorization} from './push.mjs';
 const origin='https://planbord-285.pages.dev';
 function setup() {
@@ -57,7 +57,8 @@ test('scheduled reminders target selected teams and users, deduplicate overlappi
   const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia'),alex=await x.guest('Alex');
   const s=tom.state;
   s.teams.push({id:'field',name:'Veldwerk'});
-  s.cards.push({id:'project',title:'Enschede',comment:'',column:s.columns[0].id,teamId:'field',
+  s.columns.push({id:'field-start',name:'Start',teamId:'field',reminder:'',recipients:['team:field']});
+  s.cards.push({id:'project',title:'Enschede',comment:'',column:'field-start',teamId:'field',
     due:'',alert:0,timerAt:'2020-01-01T10:00',timerRecipients:['team:field','user:'+tom.me.id]});
   assert.equal((await x.request('board','PUT',{version:tom.version,state:s},tom.cookie)).status,200);
   assert.equal((await x.request('profile','PUT',{name:'Tom',teams:['field']},tom.cookie)).status,200);
@@ -154,6 +155,34 @@ test('archived team projects are retained in shared storage and do not reappear 
   assert.equal(after.archive[0].card.title,'Bewaren');
   assert.equal(after.archive[0].columnName,'Afgerond');
 });
+test('daily board backups run at Amsterdam midnight and retain exactly seven days',async()=>{
+  const x=setup(),tom=await x.guest('Tom');
+  assert.equal(await backupDaily(x.env,Date.parse('2026-01-02T12:00:00Z')),false);
+  const first=Date.parse('2026-01-01T23:05:00Z');
+  assert.equal(await backupDaily(x.env,first),true);
+  assert.equal(await backupDaily(x.env,first+30000),false);
+  for(let day=1;day<8;day++) assert.equal(await backupDaily(x.env,first+day*86400000),true);
+  const rows=x.db.prepare('SELECT day FROM board_backups ORDER BY day').all();
+  assert.equal(rows.length,7); assert.equal(rows[0].day,'2026-01-03'); assert.equal(rows[6].day,'2026-01-09');
+  x.env.ADMIN_CODE='backup-admin';
+  assert.equal((await x.request('admin/backups','GET',undefined,tom.cookie)).status,403);
+  await x.request('admin/login','POST',{code:'backup-admin'},tom.cookie);
+  const list=await x.request('admin/backups','GET',undefined,tom.cookie);
+  assert.equal(list.status,200); assert.equal(list.body.backups.length,7);
+  const download=await x.request('admin/backups/2026-01-09','GET',undefined,tom.cookie);
+  assert.equal(download.status,200); assert.equal(download.body.format,'planboard-daily-backup');
+});
+test('only a persistent admin can permanently remove a project from the archive',async()=>{
+  const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia');x.env.ADMIN_CODE='archive-admin';
+  const board=(await x.request('board','GET',undefined,tom.cookie)).body;
+  board.state.archive=[{id:'archive-delete-1',archivedAt:Date.now(),teamName:'Iedereen',columnName:'Klaar',card:{id:'old-project',title:'Definitief weg',comment:'',due:'',timerAt:'',alert:1}}];
+  assert.equal((await x.request('board','PUT',{state:board.state,version:board.version},tom.cookie)).status,200);
+  assert.equal((await x.request('admin/archive/archive-delete-1','DELETE',undefined,mia.cookie)).status,403);
+  await x.request('admin/login','POST',{code:'archive-admin'},tom.cookie);
+  const removed=await x.request('admin/archive/archive-delete-1','DELETE',undefined,tom.cookie);
+  assert.equal(removed.status,200); assert.equal(removed.body.state.archive.length,0);
+  assert.equal((await x.request('admin/archive/archive-delete-1','DELETE',undefined,tom.cookie)).status,404);
+});
 test('one password account works from multiple devices and keeps its personal actions private',async()=>{
   const x=setup();
   const register=await x.request('register','POST',{name:'Tom',login:'tom.test',password:'een-sterk-wachtwoord',code:'test-invite'});
@@ -173,8 +202,46 @@ test('admin code is stored as a privilege on the account after its first success
   const signup=await x.request('register','POST',{name:'Tom',login:'tom.admin',password:'een-sterk-wachtwoord',code:'test-invite'});
   assert.equal((await x.request('admin/login','POST',{code:'admin-test-password'},signup.cookie)).status,200);
   const nextDevice=await x.request('login','POST',{login:'tom.admin',password:'een-sterk-wachtwoord'});
-  assert.equal((await x.request('admin/login','POST',{code:''},nextDevice.cookie)).status,200);
+  assert.equal((await x.request('board','GET',undefined,nextDevice.cookie)).body.isAdmin,true);
   assert.equal((await x.request('admin/members','GET',undefined,nextDevice.cookie)).status,200);
+});
+test('a team board strips assignees and reminder targets that are outside that team',async()=>{
+  const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia'),alex=await x.guest('Alex');
+  const s=tom.state;
+  s.teams.push({id:'field',name:'Veldwerk'},{id:'office',name:'Kantoor'});
+  s.columns.push({id:'field-stage',name:'Veldwerk',teamId:'field',reminder:1,recipients:['team:field']});
+  assert.equal((await x.request('board','PUT',{state:s,version:tom.version},tom.cookie)).status,200);
+  assert.equal((await x.request('profile','PUT',{name:'Tom',teams:['field']},tom.cookie)).status,200);
+  assert.equal((await x.request('profile','PUT',{name:'Mia',teams:['field']},mia.cookie)).status,200);
+  assert.equal((await x.request('profile','PUT',{name:'Alex',teams:['office']},alex.cookie)).status,200);
+  const current=(await x.request('board','GET',undefined,tom.cookie)).body;
+  current.state.columns.find(column=>column.id==='field-stage').recipients=['team:everyone','team:office','user:'+alex.me.id,'user:'+mia.me.id];
+  current.state.cards.push({id:'field-project',title:'Alleen veldwerk',comment:'',column:'field-stage',teamId:'field',due:'',alert:1,timerAt:'2099-01-01T10:00',assignees:[mia.me.id,alex.me.id],dueRecipients:['user:'+alex.me.id],timerRecipients:['team:office','user:'+alex.me.id]});
+  assert.equal((await x.request('board','PUT',{state:current.state,version:current.version},tom.cookie)).status,200);
+  const saved=(await x.request('board','GET',undefined,tom.cookie)).body.state;
+  assert.deepEqual(saved.columns.find(column=>column.id==='field-stage').recipients,['user:'+mia.me.id]);
+  const card=saved.cards.find(item=>item.id==='field-project');
+  assert.deepEqual(card.assignees,[mia.me.id]);
+  assert.deepEqual(card.dueRecipients,['team:field']);
+  assert.deepEqual(card.timerRecipients,['team:field']);
+});
+test('private messages support favorites, replies and recipient-only deletion',async()=>{
+  const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia'),alex=await x.guest('Alex');
+  assert.equal((await x.request('messages','POST',{recipient:mia.me.id,body:'Kun je dit controleren?'},tom.cookie)).status,200);
+  let miaBoard=(await x.request('board','GET',undefined,mia.cookie)).body;
+  assert.equal(miaBoard.messages.length,1); assert.equal(miaBoard.messages[0].senderName,'Tom');
+  assert.equal((await x.request('board','GET',undefined,alex.cookie)).body.messages.length,0);
+  assert.equal((await x.request('messages/favorites','PUT',{ids:[tom.me.id,'bestaat-niet']},mia.cookie)).status,200);
+  miaBoard=(await x.request('board','GET',undefined,mia.cookie)).body;
+  assert.deepEqual(miaBoard.messageFavorites,[tom.me.id]);
+  const original=miaBoard.messages[0];
+  assert.equal((await x.request('messages','POST',{recipient:tom.me.id,body:'Ja, ik kijk ernaar.'},mia.cookie)).status,200);
+  assert.equal((await x.request('board','GET',undefined,mia.cookie)).body.messages.length,1);
+  assert.equal((await x.request('board','GET',undefined,tom.cookie)).body.messages.length,1);
+  assert.equal((await x.request('messages/'+original.id,'DELETE',undefined,tom.cookie)).status,404);
+  assert.equal((await x.request('messages/'+original.id,'DELETE',undefined,mia.cookie)).status,200);
+  assert.equal((await x.request('board','GET',undefined,mia.cookie)).body.messages.length,0);
+  assert.equal((await x.request('board','GET',undefined,tom.cookie)).body.messages.length,1);
 });
 test('admin password grants a short-lived separate session and can safely remove another account',async()=>{
   const x=setup(),tom=await x.guest('Tom'),mia=await x.guest('Mia');

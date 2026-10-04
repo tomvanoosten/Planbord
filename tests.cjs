@@ -59,6 +59,7 @@ function app(saved) {
     showModal(){this.open=true;}
     close(){this.open=false;}
     focus(){}
+    addEventListener(type,listener){(this.listeners ||= {})[type]=listener;}
     append(item){this.children.push(item);}
     remove(){this.removed=true;}
     set innerHTML(value){
@@ -112,6 +113,15 @@ test('card open/save/reopen persists comments, timer, zero-day lead, and stage',
   assert.equal(b.el.timerAt.value,c.timerAt);
   assert.equal(b.el.moveCard.value,'stage-1');
 });
+test('escape from an existing project saves the edited values without pressing save',()=>{
+  const a=app();
+  const id=a.run('state.cards[0].id');
+  a.run('openCard('+JSON.stringify(id)+')');
+  a.el.cardComment.value='Deze opmerking is automatisch opgeslagen';
+  a.el.cardDialog.listeners.cancel({preventDefault(){}});
+  assert.equal(a.el.cardDialog.open,false);
+  assert.equal(a.run('state.cards[0].comment'),'Deze opmerking is automatisch opgeslagen');
+});
 test('insert left/right and delete confirmation preserve cards', () => {
   const a=app();
   a.run("openColumn('stage-0')");
@@ -133,11 +143,30 @@ test('insert left/right and delete confirmation preserve cards', () => {
   assert.equal(a.run('state.cards.length'),3);
   assert.equal(a.run("state.cards.some(c=>c.column==='stage-0')"),false);
 });
-test('test alert works without desktop API, opens its card, and expires in five seconds', () => {
+test('archiving a project removes it from the active board but keeps its details in the archive',()=>{
+  const a=app();
+  const id=a.run('state.cards[0].id');
+  a.run('openCard('+JSON.stringify(id)+')');
+  a.el.cardComment.value='Bewaar deze opmerking';
+  a.el.deleteCard.onclick(); a.el.confirmDelete.onclick();
+  assert.equal(a.run('state.cards.some(card=>card.id==='+JSON.stringify(id)+')'),false);
+  assert.equal(a.run('state.archive.length'),1);
+  assert.equal(a.run('state.archive[0].card.comment'),'Bewaar deze opmerking');
+});
+test('permanent archive removal is only rendered for an admin and requires confirmation',()=>{
+  const a=app();
+  a.run("state.archive=[{id:'archive-admin-test',archivedAt:Date.now(),teamName:'Iedereen',columnName:'Klaar',card:{id:'old',title:'Oud project',comment:'',due:'',timerAt:'',alert:1}}];renderArchive()");
+  assert.doesNotMatch(a.el.archiveMonths.innerHTML,/Definitief verwijderen/);
+  a.context.window.Shared={isAdmin:true,async deleteArchived(){}};a.run('renderArchive()');
+  assert.match(a.el.archiveMonths.innerHTML,/Definitief verwijderen/);
+  a.el.archiveMonths.onclick({target:{closest(){return {dataset:{purgeArchive:'archive-admin-test',purgeName:'Oud project'}};}}});
+  assert.equal(a.el.confirmDialog.open,true);assert.match(a.el.confirmText.textContent,/kan alleen via een dagelijkse back-up/);
+});
+test('test alert works without desktop API, opens its card, and expires in ten seconds', () => {
   const a=app();
   a.el.testNotification.onclick();
   assert.equal(a.el.toasts.children.length,1);
-  assert.equal(a.timeouts[0].ms,5000);
+  assert.equal(a.timeouts[0].ms,10000);
   a.el.toasts.children[0].onclick();
   assert.equal(a.el.cardDialog.open,true);
 });
@@ -169,7 +198,7 @@ test('custom labels persist through subsequent project saves', () => {
   a.el.cardForm.onsubmit({preventDefault(){}});
   assert.equal(JSON.parse(a.data.get('planboard-state')).labels.date,'Veldwerk');
 });
-test('desktop alert contains project name, opens project and is closed after five seconds', () => {
+test('desktop alert contains project name, opens project and is closed after ten seconds', () => {
   const a=app();
   let shown;
   class Notification {
@@ -184,7 +213,7 @@ test('desktop alert contains project name, opens project and is closed after fiv
   shown.onclick();
   assert.equal(a.el.cardDialog.open,true);
   const closing=a.timeouts[a.timeouts.length-1];
-  assert.equal(closing.ms,5000);
+  assert.equal(closing.ms,10000);
   closing.f();
   assert.equal(shown.closed,true);
 });
@@ -205,16 +234,45 @@ test('teams UI creates and filters teams and saves distinct audiences per remind
   a.el.newCard.onclick();
   a.el.cardTitle.value='Teamproject';
   a.el.cardTeam.value=id;
+  a.el.cardTeam.onchange();
   a.el.dueRecipients.inputs.forEach(i=>{i.checked=i.value==='team:'+id;});
-  a.el.timerRecipients.inputs.forEach(i=>{i.checked=i.value==='team:everyone';});
+  a.el.timerRecipients.inputs.forEach(i=>{i.checked=i.value==='team:'+id;});
   a.el.cardForm.onsubmit({preventDefault(){}});
   const card=a.run('state.cards[state.cards.length-1]');
   assert.equal(card.teamId,id);
   assert.equal(card.dueRecipients[0],'team:'+id);
-  assert.equal(card.timerRecipients[0],'team:everyone');
+  assert.equal(card.timerRecipients[0],'team:'+id);
   a.el.teamFilter.value=id;a.el.teamFilter.onchange();
   assert.equal(a.context.window.Teams.matches(card),true);
   assert.equal(a.context.window.Teams.matches({teamId:'different'}),false);
+  assert.equal(a.run("state.columns.filter(c=>c.teamId==='"+id+"').length"),10);
+  assert.equal(a.run("state.cards.find(c=>c.id==='"+card.id+"').column"),a.run("state.columns.find(c=>c.teamId==='"+id+"').id"));
+  assert.equal(a.run("state.columns.filter(c=>c.teamId==='everyone').length"),10);
+});
+test('the Everyone board can be duplicated without carrying old assignees or audiences',()=>{
+  const a=app();a.load('teams.js');a.el.teamsButton.onclick();
+  a.el.teamList.onclick({target:{closest(selector){return selector==='[data-duplicate-team]'?{dataset:{duplicateTeam:'everyone'}}:null;}}});
+  assert.equal(a.run('state.teams.length'),2);
+  const id=a.run('state.teams[1].id');
+  assert.equal(a.run("state.columns.filter(column=>column.teamId==="+JSON.stringify(id)+").length"),10);
+  assert.equal(a.run("state.cards.filter(card=>card.teamId==="+JSON.stringify(id)+").every(card=>card.assignees.length===0&&card.dueRecipients[0]==='team:'+"+JSON.stringify(id)+")"),true);
+});
+test('message inbox exposes reply, add-to-actions and delete as distinct choices',()=>{
+  const a=app();
+  a.context.window.PlanboardMessages.set([{id:'message-1',sender:'member-1',senderName:'Mia',senderColor:'#459056',body:'Controleer de offerte',created:1,seen:false}],[],false);
+  assert.match(a.el.messageInbox.innerHTML,/Controleer de offerte/);
+  assert.match(a.el.messageInbox.innerHTML,/Naar Acties/);
+  assert.match(a.el.messageInbox.innerHTML,/Beantwoorden/);
+  assert.match(a.el.messageInbox.innerHTML,/Wissen/);
+  a.el.messageInbox.onclick({target:{closest(){return {dataset:{messageAction:'actions',messageId:'message-1'}};}}});
+  assert.equal(a.context.window.PlanboardActions.get().at(-1).text,'Controleer de offerte');
+  assert.equal(a.run('messageItems.length'),1);
+});
+test('team-aware board data keeps legacy columns and projects while adding a separate team board',()=>{
+  const s=C.normalize({columns:[{id:'main',name:'Algemeen'}],cards:[{id:'old',title:'Bestaand',column:'main',comment:''}],teams:[{id:'field',name:'Veldwerk'}]});
+  assert.equal(s.columns[0].teamId,'everyone');
+  assert.equal(s.cards[0].teamId,'everyone');
+  assert.equal(s.cards[0].column,'main');
 });
 test('empty audience blocks saving rather than silently notifying everyone',()=>{
   const a=app();a.load('teams.js');

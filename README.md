@@ -24,6 +24,8 @@ The grey columns scroll horizontally. Click a white card to edit it, click a col
 - Per-card column reminders after a configurable number of days. Moving a card restarts its stay timer.
 - Editable labels for project name, comments, date and advance warning through **Veldnamen**.
 - Search, drag-and-drop and a notification inbox. Notifications open their project.
+- Seven automatic daily board snapshots stored in D1 and downloadable by admins.
+- Admin-only permanent removal of individual archived projects.
 - Five-second in-app alerts. Desktop alerts are also asked to close after five seconds; Windows/browser settings can affect delivery and display timing.
 - **Testmelding** sends an immediate alert for the first project.
 - Saved data is kept under the original `planboard-state` key. Existing projects are preserved.

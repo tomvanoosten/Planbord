@@ -64,7 +64,27 @@ CREATE TABLE IF NOT EXISTS action_lists (
   data TEXT NOT NULL,
   updated INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  sender TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  seen INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS message_favorites (
+  member TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  updated INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS board_backups (
+  day TEXT PRIMARY KEY,
+  created INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS delivery_member ON deliveries(member,seen);
 CREATE INDEX IF NOT EXISTS subscription_member ON subscriptions(member);
 CREATE INDEX IF NOT EXISTS admin_session_member ON admin_sessions(member,expires);
 CREATE INDEX IF NOT EXISTS member_session_member ON member_sessions(member,expires);
+CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient,created);

@@ -16,8 +16,13 @@
   }
   function choices(id, selected, defaultTeam = 'everyone') {
     selected ||= ['team:'+defaultTeam];
-    const entries = state.teams.map(t => ({id:'team:' + t.id, name:'Team: ' + t.name}))
-      .concat((people.length ? people : [guest]).map(p => ({id:'user:' + p.id, name:p.name + (p.id === guest.id ? ' (jij)' : '')})));
+    const members=(people.length ? people : [guest]).filter(person=>defaultTeam==='everyone'||(person.teams||[]).includes(defaultTeam));
+    const teams=defaultTeam==='everyone'?state.teams:[state.teams.find(team=>team.id===defaultTeam)].filter(Boolean);
+    const entries = teams.map(t => ({id:'team:' + t.id, name:'Team: ' + t.name}))
+      .concat(members.map(p => ({id:'user:' + p.id, name:p.name + (p.id === guest.id ? ' (jij)' : '')})));
+    const allowed=new Set(entries.map(entry=>entry.id));
+    selected=selected.filter(value=>allowed.has(value));
+    if(!selected.length) selected=['team:'+defaultTeam];
     $(id).innerHTML = entries.map(e => '<label class="check-label"><input type="checkbox" value="' + esc(e.id) + '"' + (selected.includes(e.id) ? ' checked' : '') + '> ' + esc(e.name) + '</label>').join('');
     $(id).onchange = () => $(id).querySelector('input')?.setCustomValidity('');
   }
@@ -79,18 +84,17 @@
   }
   function teamList() {
     $('teamList').innerHTML = state.teams.map(t => '<div class="team-edit"><input aria-label="Teamnaam" maxlength="60" data-team-name="' + esc(t.id) + '" value="' + esc(t.name) + '"' + (t.id === 'everyone' ? ' disabled' : '') + '>' +
-      (t.id === 'everyone' ? '<small>Iedere deelnemer</small>' : '<button data-rename-team="' + esc(t.id) + '">Naam opslaan</button><button data-duplicate-team="' + esc(t.id) + '">Bord dupliceren</button><button class="danger" data-delete-team="' + esc(t.id) + '">Team verwijderen</button>') + '</div>').join('');
+      (t.id === 'everyone' ? '<small>Iedere deelnemer</small><button data-duplicate-team="everyone">Bord dupliceren</button>' : '<button data-rename-team="' + esc(t.id) + '">Naam opslaan</button><button data-duplicate-team="' + esc(t.id) + '">Bord dupliceren</button><button class="danger" data-delete-team="' + esc(t.id) + '">Team verwijderen</button>') + '</div>').join('');
   }
   function duplicateTeam(id) {
     const source=state.teams.find(t=>t.id===id); if (!source) return;
     let name=source.name+' kopie',n=2;
     while(state.teams.some(team=>team.name.toLowerCase()===name.toLowerCase())) name=source.name+' kopie '+n++;
     const teamId=C.uid(), mapping=new Map();
-    const replace=list=>[...(list||['team:'+id])].map(value=>value==='team:'+id?'team:'+teamId:value);
-    const copiedColumns=columns(id).map(column=>{const newId=C.uid();mapping.set(column.id,newId);return {...column,id:newId,teamId,recipients:replace(column.recipients),reminder:column.reminder||''};});
+    const copiedColumns=columns(id).map(column=>{const newId=C.uid();mapping.set(column.id,newId);return {...column,id:newId,teamId,recipients:['team:'+teamId],reminder:column.reminder||''};});
     if (!copiedColumns.length) return toast('Dit team heeft nog geen kolommen om te dupliceren.');
     const copiedCards=state.cards.filter(card=>(card.teamId||'everyone')===id).map(card=>{
-      const copy={...card,id:C.uid(),teamId,column:mapping.get(card.column)||copiedColumns[0].id,enteredAt:Date.now(),dueRecipients:replace(card.dueRecipients),timerRecipients:replace(card.timerRecipients)};
+      const copy={...card,id:C.uid(),teamId,column:mapping.get(card.column)||copiedColumns[0].id,enteredAt:Date.now(),assignees:[],dueRecipients:['team:'+teamId],timerRecipients:['team:'+teamId]};
       delete copy.dueSentKey; delete copy.timerSentKey; delete copy.columnSentKey; return copy;
     });
     state.teams.push({id:teamId,name}); state.columns.push(...copiedColumns); state.cards.push(...copiedCards);
@@ -140,17 +144,22 @@
     matches: card => (!onlyMine||(card.assignees||[]).includes(guest.id)) && (card.teamId || 'everyone') === filter,
     openCard(card) {
       $('cardTeam').innerHTML = options(card.teamId || 'everyone');
-      $('cardTeam').onchange = () => {
-        ensureColumns($('cardTeam').value);
-        window.PlanboardUI?.renderMoveColumns($('cardTeam').value);
+      const renderAccess=(teamId,ids=[])=>{
+        const members=(people.length?people:[guest]).filter(person=>teamId==='everyone'||(person.teams||[]).includes(teamId));
+        const allowedIds=new Set(members.map(person=>person.id)); ids=ids.filter(id=>allowedIds.has(id));
+        $('cardAssignees').innerHTML=members.map(p=>'<label class="check-label"><input type="checkbox" value="'+esc(p.id)+'"'+(ids.includes(p.id)?' checked':'')+'>'+personChip(p)+'</label>').join('') || '<p class="help">Nog geen leden in dit team.</p>';
+        const count=()=>{ $('assignmentCount').textContent=recipients('cardAssignees').length+' geselecteerd'; };
+        $('cardAssignees').onchange=count; count();
+        choices('dueRecipients', card.dueRecipients, teamId);
+        choices('timerRecipients', card.timerRecipients, teamId);
       };
-      const ids=card.assignees||[];
-      const members=(people.length?people:[guest]).concat(ids.filter(id=>!people.some(p=>p.id===id)&&id!==guest.id).map(id=>({id,name:'Voormalig lid'})));
-      $('cardAssignees').innerHTML=members.map(p=>'<label class="check-label"><input type="checkbox" value="'+esc(p.id)+'"'+(ids.includes(p.id)?' checked':'')+'>'+personChip(p)+'</label>').join('');
-      const count=()=>{ $('assignmentCount').textContent=recipients('cardAssignees').length+' geselecteerd'; };
-      $('cardAssignees').onchange=count; count();
-      choices('dueRecipients', card.dueRecipients, card.teamId || 'everyone');
-      choices('timerRecipients', card.timerRecipients, card.teamId || 'everyone');
+      renderAccess(card.teamId||'everyone',card.assignees||[]);
+      $('cardTeam').onchange = () => {
+        const teamId=$('cardTeam').value;
+        ensureColumns(teamId); window.PlanboardUI?.renderMoveColumns(teamId);
+        card.dueRecipients=['team:'+teamId]; card.timerRecipients=['team:'+teamId];
+        renderAccess(teamId,recipients('cardAssignees'));
+      };
     },
     cardFields: () => ({
       teamId: $('cardTeam').value,

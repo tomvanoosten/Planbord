@@ -96,6 +96,8 @@ Zet geen private sleutel in `wrangler.jsonc`.
 
 De taak verwerkt maximaal vijf nieuwe alarmen en vijf pushpogingen per minuut om het aantal bewerkingen per uitvoering beperkt te houden. Een grote stapel verlopen herinneringen wordt over meerdere minuten verwerkt.
 
+Dezelfde taak maakt rond 00:00 uur Nederlandse tijd automatisch één momentopname van het volledige bord. De zeven nieuwste dagelijkse momentopnamen blijven in D1 bewaard; oudere worden automatisch verwijderd. Admins kunnen de lijst bekijken en een back-up downloaden via **Beheer accounts → Dagelijkse back-ups**. Deze momentopnamen beschermen tegen per ongeluk wijzigen of verwijderen, maar staan in dezelfde D1-database. Bewaar daarom daarnaast af en toe een gedownloade reservekopie buiten Cloudflare.
+
 Cloudflare-documentatie: https://developers.cloudflare.com/workers/configuration/cron-triggers/
 
 ## 6. Eerste keer verbinden

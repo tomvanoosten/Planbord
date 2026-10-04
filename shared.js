@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  let enabled = false, available = false, adminReady = false, version = 0, busy = false, dirty = false, blocked = false, debounce, actionsDebounce;
+  let enabled = false, available = false, adminReady = false, isAdmin = false, version = 0, busy = false, dirty = false, blocked = false, debounce, actionsDebounce;
   let seen = new Set();
   function showPushStatus(config) {
     const ready=!!config?.publicKey;
@@ -38,7 +38,9 @@
     state = C.normalize(data.state);
     state.notifications = data.notifications;
     version = data.version;
+    isAdmin=!!data.isAdmin;
     window.Teams.setPeople(data.me, data.members);
+    window.PlanboardMessages?.set(data.messages||[],data.messageFavorites||[],alertNew);
     displayNotes(data.notifications, alertNew);
     cache(); render();
     $('saveStatus').textContent = 'Gedeeld bord · bijgewerkt';
@@ -69,7 +71,7 @@
       const data = await api('board');
       if (busy || dirty || blocked || dragged || resizing) return;
       const active=document.activeElement;
-      if (active?.matches?.('[data-action-text],[data-todo-comment]')) { displayNotes(data.notifications); return; }
+      if (active?.matches?.('[data-action-text],[data-todo-comment],[data-message-text]')) { displayNotes(data.notifications); return; }
       if (document.querySelector('dialog[open]')) { displayNotes(data.notifications); return; }
       apply(data, true);
     } catch { $('saveStatus').textContent = 'Verbinding onderbroken · opnieuw proberen…'; }
@@ -142,10 +144,21 @@
     } catch (error) { toast(error.message); }
   }
   window.Shared = {
-    get enabled(){return enabled;}, get available(){return available;}, get adminReady(){return adminReady;}, profile, register, login, setAccount, loadActions, saveActions, enablePush,
-    async adminLogin(code) { return api('admin/login',{method:'POST',body:JSON.stringify({code})}); },
+    get enabled(){return enabled;}, get available(){return available;}, get adminReady(){return adminReady;}, get isAdmin(){return isAdmin;}, profile, register, login, setAccount, loadActions, saveActions, enablePush,
+    async adminLogin(code) { const result=await api('admin/login',{method:'POST',body:JSON.stringify({code})});isAdmin=true;return result; },
     async members() { return api('admin/members'); },
     async deleteMember(id) { return api('admin/members/'+encodeURIComponent(id),{method:'DELETE'}); },
+    async backups() { return api('admin/backups'); },
+    async backup(day) { return api('admin/backups/'+encodeURIComponent(day)); },
+    async deleteArchived(id) { const data=await api('admin/archive/'+encodeURIComponent(id),{method:'DELETE'});apply(data);return data; },
+    async sendMessage(recipient,body) { return api('messages',{method:'POST',body:JSON.stringify({recipient,body})}); },
+    async deleteMessage(id) { return api('messages/'+encodeURIComponent(id),{method:'DELETE'}); },
+    async saveMessageFavorites(ids) { return api('messages/favorites',{method:'PUT',body:JSON.stringify({ids})}); },
+    async markMessagesRead() {
+      if(!enabled)return;
+      try { await api('messages/read',{method:'POST',body:'{}'}); window.PlanboardMessages?.markRead?.(); }
+      catch(error) { toast(error.message); }
+    },
     save() {
       if (!enabled) return;
       dirty = true;
